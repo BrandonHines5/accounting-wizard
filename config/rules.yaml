@@ -1,0 +1,37 @@
+# Tier 1 rule parameters. Tune these during the pilot based on the
+# false-positive log — do not change rule logic to tune, change thresholds.
+
+defaults:
+  # T1-04: payments below this each, summing above it, within window_days
+  approval_threshold: 5000
+  threshold_split_window_days: 7
+
+  # T1-02: fuzzy duplicate tolerances
+  fuzzy_dup_amount_tolerance: 1.00
+  fuzzy_dup_window_days: 60
+
+  # T1-07: weekdays AP batches normally run (0=Mon … 6=Sun)
+  ap_run_weekdays: [1, 4]   # Tue / Fri — confirm with actual AP cadence
+
+  # T1-10: vendor-name token sort ratio above which two vendors are flagged
+  vendor_similarity_threshold: 85
+
+  # T1-11: new vendor + large first payment
+  new_vendor_days: 30
+  new_vendor_payment_threshold: 5000
+
+  # T1-23: wrong-entity heuristic — vendor is "established" in an entity at
+  # this many transactions; a stray posting elsewhere below stray_max is flagged
+  wrong_entity_established_min: 5
+  wrong_entity_stray_max: 2
+
+  # T1-24: inter-company balances must agree within this tolerance
+  intercompany_tolerance: 0.01
+
+  # T1-30: credit memos / write-offs above this are listed for review
+  credit_memo_threshold: 250
+
+# Account-name pattern that identifies inter-company GL accounts.
+# Group 1 = direction (to|from), group 2 = counterparty name, resolved
+# against entity names/aliases in entities.yaml.
+intercompany_account_pattern: "(?i)due\\s+(to|from)\\s+(.+)"

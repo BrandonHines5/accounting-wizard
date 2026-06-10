@@ -1,0 +1,66 @@
+# Maps each export file (by filename stem, e.g. qb__check_detail.xlsx) to the
+# canonical transaction/vendor columns. QB Desktop memorized-report headers
+# vary — VERIFY each mapping against the first real export, then leave it alone.
+#
+# kind: transactions (default) | vendors
+# columns:   canonical_column: "Export Header"
+# constants: canonical_column: fixed value
+
+qb__check_detail:
+  columns:
+    source_id: "Trans #"
+    date: "Date"
+    vendor_name: "Name"
+    account: "Account"
+    amount: "Amount"
+    check_no: "Num"
+    memo: "Memo"
+  constants:
+    txn_type: check
+
+qb__general_ledger:
+  columns:
+    source_id: "Trans #"
+    date: "Date"
+    vendor_name: "Name"
+    job_id: "Class"          # or the job column your GL layout uses
+    account: "Account"
+    amount: "Amount"
+    check_no: "Num"
+    memo: "Memo"
+    entered_by: "Last modified by"
+  constants:
+    txn_type: journal
+
+qb__vendor_transaction_detail:
+  columns:
+    source_id: "Trans #"
+    date: "Date"
+    vendor_name: "Name"
+    invoice_no: "Num"
+    account: "Account"
+    amount: "Amount"
+    memo: "Memo"
+  constants:
+    txn_type: bill_payment
+
+qb__credit_memos:
+  columns:
+    source_id: "Trans #"
+    date: "Date"
+    vendor_name: "Name"
+    amount: "Amount"
+    memo: "Memo"
+    entered_by: "Last modified by"
+  constants:
+    txn_type: credit_memo
+
+qb__vendor_list:
+  kind: vendors
+  columns:
+    vendor_id: "Vendor"
+    vendor_name: "Vendor"
+    address: "Bill from"
+    phone: "Main Phone"
+    ein: "Tax ID"
+    first_seen: "Date Created"

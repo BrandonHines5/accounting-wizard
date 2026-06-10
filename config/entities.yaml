@@ -1,0 +1,38 @@
+# Entity registry — the single source of truth for which entities the
+# detection battery covers. Every rule, ingest script, and report consumes
+# this file; entity names must never be hardcoded in code.
+#
+# To onboard a new entity: add an entry here, drop its exports in
+# data/<entity id>/, and (Phase 2+) sync the registry to the Supabase
+# `entities` table. Nothing else.
+#
+# Fields:
+#   id              stable slug, used in data paths, findings, and Supabase
+#   name            legal name as it appears in QuickBooks
+#   legal_type      llc | corp | sole_prop | nonprofit_501c3
+#   active          inactive entities are skipped by weekly runs but kept
+#                   for historical findings
+#   aliases         alternate names seen in memos / inter-company accounts
+#                   (used to resolve "Due to/from X" account names)
+#   approval_threshold  per-entity AP approval threshold in dollars
+#                   (used by T1-04 threshold-splitting); omit to use the
+#                   global default in rules.yaml
+
+entities:
+  - id: hines-homes
+    name: Hines Homes LLC
+    legal_type: llc
+    active: true
+    aliases: ["Hines Homes", "HH", "HHLLC"]
+
+  - id: mjv
+    name: MJV Building Group
+    legal_type: llc
+    active: true
+    aliases: ["MJV", "MJV Building"]
+
+  - id: hope-filled
+    name: Hope Filled Homes
+    legal_type: nonprofit_501c3
+    active: true
+    aliases: ["Hope Filled", "HFH"]

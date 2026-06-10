@@ -1,0 +1,12 @@
+entity_id,vendor_id,vendor_name,address,phone,ein,bank_fingerprint,first_seen
+alpha,V-ACME,Acme Lumber,100 Mill Rd,501-555-0101,,fp-acme,2024-01-15
+alpha,V-SMITH,Smith Electric,200 Volt Ave,501-555-0102,,fp-smith,2024-03-02
+alpha,V-QPC,QuickPour Concrete,300 Slab St,501-555-0103,,fp-qpc,2024-06-10
+alpha,V-OFF,OffCycle Supply,400 Odd Ln,501-555-0104,,fp-off,2025-02-01
+alpha,V-NEWCO,NewCo Builders,500 Fresh Way,501-555-0105,,fp-newco,2026-05-01
+alpha,V-ROOF,Roof Pros,600 Shingle Dr,501-555-0106,,fp-roof,2023-11-20
+alpha,V-ABC1,ABC Plumbing LLC,700 Pipe Rd,501-555-0107,,fp-abc1,2023-05-05
+alpha,V-ABC2,ABC Plumbing,701 Pipe Rd,501-555-0108,,fp-abc2,2024-08-12
+alpha,V-DD,Delta Drywall,800 Mud Ct,501-555-0142,,fp-dd,2023-01-01
+alpha,V-EP,Echo Paint Co,900 Brush Blvd,501-555-0142,,fp-ep,2023-01-01
+charity,V-ROOF,Roof Pros,600 Shingle Dr,501-555-0106,,fp-roof,2024-04-01

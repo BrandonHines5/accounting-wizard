@@ -1,0 +1,21 @@
+# CRITICAL — real financial data must never be committed
+data/
+output/
+*.xlsx
+*.xls
+*.csv
+*.pdf
+*.qbb
+*.qbw
+*.env
+.env*
+
+# Synthetic test fixtures are safe and explicitly re-included
+!tests/fixtures/*.csv
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/

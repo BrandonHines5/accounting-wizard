@@ -1,0 +1,26 @@
+# Synthetic registry — deliberately NOT the real entities, to prove the
+# battery is registry-driven and works for any set of operated entities.
+entities:
+  - id: alpha
+    name: Alpha Builders LLC
+    legal_type: llc
+    active: true
+    aliases: ["Alpha Builders", "Alpha"]
+
+  - id: beta
+    name: Beta Construction Inc
+    legal_type: corp
+    active: true
+    aliases: ["Beta Construction", "Beta"]
+
+  - id: charity
+    name: Charity Corner Homes
+    legal_type: nonprofit_501c3
+    active: true
+    aliases: ["Charity Corner", "CCH"]
+
+  - id: delta
+    name: Delta Development LLC
+    legal_type: llc
+    active: false        # wound down — runs must skip it
+    aliases: ["Delta Dev"]

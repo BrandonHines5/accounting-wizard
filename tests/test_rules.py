@@ -1,0 +1,94 @@
+"""End-to-end Tier 1 battery over the synthetic 4-entity fixture set.
+
+Each implemented rule has exactly one (or a known number of) planted scenarios.
+"""
+import pytest
+
+from rules.engine import run_all
+
+
+@pytest.fixture(scope="module")
+def findings(ctx):
+    return run_all(ctx)
+
+
+def by_rule(findings, rule_id):
+    return [f for f in findings if f.rule_id == rule_id]
+
+
+def test_t1_01_exact_duplicate(findings):
+    hits = by_rule(findings, "T1-01")
+    assert len(hits) == 1
+    assert hits[0].entity_ids == ["alpha"]
+    assert set(hits[0].transactions) == {"TX-001", "TX-002"}
+    assert str(hits[0].severity) == "CRITICAL"
+
+
+def test_t1_02_fuzzy_duplicate(findings):
+    hits = by_rule(findings, "T1-02")
+    assert len(hits) == 1
+    assert set(hits[0].transactions) == {"TX-003", "TX-004"}
+
+
+def test_t1_04_threshold_splitting(findings):
+    hits = by_rule(findings, "T1-04")
+    assert len(hits) == 1
+    assert set(hits[0].transactions) == {"TX-005", "TX-006", "TX-007"}
+
+
+def test_t1_07_off_cycle_payment(findings):
+    hits = by_rule(findings, "T1-07")
+    assert len(hits) == 1
+    assert hits[0].transactions == ["TX-008"]
+
+
+def test_t1_10_duplicate_vendors(findings):
+    hits = by_rule(findings, "T1-10")
+    pairs = {frozenset([h.details["vendor_a"], h.details["vendor_b"]]) for h in hits}
+    assert frozenset(["V-ABC1", "V-ABC2"]) in pairs       # name similarity
+    assert frozenset(["V-DD", "V-EP"]) in pairs           # shared phone
+    assert len(hits) == 2
+
+
+def test_t1_11_new_vendor_large_payment(findings):
+    hits = by_rule(findings, "T1-11")
+    assert len(hits) == 1
+    assert hits[0].details["vendor"] == "NewCo Builders"
+
+
+def test_t1_21_job_cost_transfer(findings):
+    hits = by_rule(findings, "T1-21")
+    assert len(hits) == 1
+    assert hits[0].transactions == ["J-100"]
+
+
+def test_t1_23_wrong_entity_flags_nonprofit_stray(findings):
+    hits = by_rule(findings, "T1-23")
+    assert len(hits) == 1
+    assert set(hits[0].entity_ids) == {"alpha", "charity"}
+    assert hits[0].transactions == ["TX-015"]
+    assert str(hits[0].severity) == "HIGH"
+
+
+def test_t1_24_intercompany_imbalance(findings):
+    hits = by_rule(findings, "T1-24")
+    assert len(hits) == 1
+    assert set(hits[0].entity_ids) == {"alpha", "beta"}
+    assert hits[0].details["debtor_books"] == 800.00
+    assert hits[0].details["creditor_books"] == 1000.00
+
+
+def test_t1_30_credit_memo_listing(findings):
+    hits = by_rule(findings, "T1-30")
+    assert len(hits) == 1
+    assert hits[0].entity_ids == ["beta"]
+
+
+def test_inactive_entities_are_skipped(findings):
+    # delta has a planted exact-duplicate pair that must NOT surface
+    assert all("delta" not in f.entity_ids for f in findings)
+
+
+def test_findings_sorted_by_severity(findings):
+    severities = [int(f.severity) for f in findings]
+    assert severities == sorted(severities, reverse=True)

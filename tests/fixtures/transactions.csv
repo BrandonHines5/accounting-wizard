@@ -1,0 +1,23 @@
+entity_id,source_system,source_id,txn_type,date,vendor_id,vendor_name,job_id,cost_code,account,amount,check_no,invoice_no,memo,entered_by
+alpha,qb,TX-001,check,2026-05-05,V-ACME,Acme Lumber,JOB-A,06-100,Checking,500.00,1001,1001,framing package,mike
+alpha,qb,TX-002,check,2026-05-12,V-ACME,Acme Lumber,JOB-A,06-100,Checking,500.00,1015,1001,framing package,mike
+alpha,qb,TX-003,bill_payment,2026-05-08,V-SMITH,Smith Electric,JOB-A,16-200,Checking,1200.00,1002,88,rough-in,kelly
+alpha,qb,TX-004,bill_payment,2026-05-15,V-SMITH,Smith Electric,JOB-A,16-200,Checking,1200.50,1010,88A,rough-in,kelly
+alpha,qb,TX-005,check,2026-05-05,V-QPC,QuickPour Concrete,JOB-B,03-300,Checking,2000.00,1003,C1,flatwork,mike
+alpha,qb,TX-006,check,2026-05-08,V-QPC,QuickPour Concrete,JOB-B,03-300,Checking,2000.00,1004,C2,flatwork,mike
+alpha,qb,TX-007,check,2026-05-12,V-QPC,QuickPour Concrete,JOB-B,03-300,Checking,2000.00,1005,C3,flatwork,mike
+alpha,qb,TX-008,check,2026-05-09,V-OFF,OffCycle Supply,JOB-A,01-100,Checking,300.00,1006,S1,site supplies,mike
+alpha,qb,TX-009,check,2026-05-15,V-NEWCO,NewCo Builders,JOB-B,05-100,Checking,8000.00,1007,N1,foundation sub,mike
+alpha,qb,TX-010,bill_payment,2026-05-01,V-ROOF,Roof Pros,JOB-A,07-100,Checking,6000.00,1008,R10,roofing,kelly
+alpha,qb,TX-011,bill_payment,2026-05-08,V-ROOF,Roof Pros,JOB-A,07-100,Checking,6100.00,1009,R20,roofing,kelly
+alpha,qb,TX-012,bill_payment,2026-05-15,V-ROOF,Roof Pros,JOB-B,07-100,Checking,6200.00,1011,R30,roofing,kelly
+alpha,qb,TX-013,bill_payment,2026-05-22,V-ROOF,Roof Pros,JOB-B,07-100,Checking,6300.00,1012,R40,roofing,kelly
+alpha,qb,TX-014,bill_payment,2026-05-29,V-ROOF,Roof Pros,JOB-B,07-100,Checking,6400.00,1013,R50,roofing,kelly
+charity,qb,TX-015,bill_payment,2026-05-26,V-ROOF,Roof Pros,CC-1,07-100,Checking,450.00,2001,R60,repair,kelly
+alpha,qb,J-100,journal,2026-05-19,,,JOB-A,06-100,Job Costs,1500.00,,,move framing cost,mike
+alpha,qb,J-100,journal,2026-05-19,,,JOB-B,06-100,Job Costs,-1500.00,,,move framing cost,mike
+alpha,qb,J-200,journal,2026-05-26,,,,,Due from Beta Construction,1000.00,,,materials shared,kelly
+beta,qb,J-201,journal,2026-05-26,,,,,Due to Alpha Builders,800.00,,,materials shared,kelly
+beta,qb,CM-001,credit_memo,2026-05-19,,Beta Client,,,Accounts Receivable,-500.00,,,goodwill credit,kelly
+delta,qb,TX-900,check,2026-05-05,V-GHOST,Ghost Vendor,,,Checking,700.00,9001,G1,inactive entity,mike
+delta,qb,TX-901,check,2026-05-12,V-GHOST,Ghost Vendor,,,Checking,700.00,9002,G1,inactive entity,mike
