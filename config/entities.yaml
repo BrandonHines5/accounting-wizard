@@ -23,16 +23,47 @@ entities:
     name: Hines Homes LLC
     legal_type: llc
     active: true
-    aliases: ["Hines Homes", "HH", "HHLLC"]
-
-  - id: mjv
-    name: MJV Building Group
-    legal_type: llc
-    active: true
-    aliases: ["MJV", "MJV Building"]
+    # MJV Building Group is a DBA of Hines Homes — same entity, same books.
+    aliases: ["Hines Homes", "HH", "HHLLC", "MJV Building Group", "MJV", "MJV Building"]
 
   - id: hope-filled
     name: Hope Filled Homes
     legal_type: nonprofit_501c3
     active: true
     aliases: ["Hope Filled", "HFH"]
+
+  - id: titan-house
+    name: Titan House
+    legal_type: llc            # TODO confirm legal type
+    active: true
+    aliases: ["Titan"]
+
+  - id: l2f-ventures
+    name: L2F Ventures
+    legal_type: llc            # TODO confirm legal type
+    active: true
+    aliases: ["L2F"]
+
+  - id: blue-tree-realty
+    name: Blue Tree Realty
+    legal_type: llc            # TODO confirm legal type
+    active: true
+    aliases: ["Blue Tree", "BTR"]
+
+  - id: stonebrook-poa
+    name: Stonebrook POA
+    legal_type: corp           # TODO confirm — POAs are often nonprofit corps;
+    active: true               # if 501(c)(3), set nonprofit_501c3 for severity floors
+    aliases: ["Stonebrook"]
+
+  - id: mojuva
+    name: Mojuva
+    legal_type: llc            # TODO confirm legal type
+    active: true
+    aliases: []
+
+  - id: 13525wm
+    name: 13525WM
+    legal_type: llc            # TODO confirm legal type
+    active: true
+    aliases: ["13525 WM", "13525"]

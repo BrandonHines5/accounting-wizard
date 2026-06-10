@@ -15,8 +15,12 @@ output/
 # Synthetic test fixtures are safe and explicitly re-included
 !tests/fixtures/*.csv
 
-# Placeholder README so data/ exists in fresh clones (contents stay ignored)
+# Placeholder README + per-entity drop folders exist in fresh clones,
+# but every real file dropped inside them stays ignored
 !data/README.md
+!data/*/
+data/*/*
+!data/*/.gitkeep
 
 # Python
 __pycache__/

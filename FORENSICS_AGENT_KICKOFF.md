@@ -2,9 +2,10 @@
 
 **Owner:** Brandon Hines
 **Entities covered:** All entities we operate — registry-driven via
-`config/entities.yaml`. Initial registry: Hines Homes LLC, MJV Building Group,
-Hope Filled Homes (501(c)(3)). Adding or removing an entity is a config change,
-not a code change.
+`config/entities.yaml`. Current registry: Hines Homes LLC (incl. MJV Building
+Group DBA), Hope Filled Homes (501(c)(3)), Titan House, L2F Ventures, Blue Tree
+Realty, Stonebrook POA, Mojuva, 13525WM. Adding or removing an entity is a
+config change, not a code change.
 **Repo:** `accounting-wizard` (private — Brandon + Kelly only)
 **Status:** Phase 1 build
 

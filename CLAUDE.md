@@ -3,9 +3,10 @@
 ## What this repo is
 
 A forensic accounting agent covering **every entity we operate**. Entities are
-registry-driven (`config/entities.yaml`) — the current registry holds Hines Homes
-LLC, MJV Building Group, and Hope Filled Homes (501(c)(3)), but adding or removing
-an entity is a config change, never a code change. It ingests financial exports,
+registry-driven (`config/entities.yaml`) — currently Hines Homes LLC (which
+includes the MJV Building Group DBA), Hope Filled Homes (501(c)(3)), Titan House,
+L2F Ventures, Blue Tree Realty, Stonebrook POA, Mojuva, and 13525WM. Adding or
+removing an entity is a config change, never a code change. It ingests financial exports,
 runs a tiered detection battery (deterministic rules → statistical anomalies → AI
 judgment → bank-statement independent verification), and produces severity-ranked
 exceptions workbooks plus findings tracked in Supabase.
