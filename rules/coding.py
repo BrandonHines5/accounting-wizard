@@ -75,39 +75,65 @@ def wrong_entity(ctx: RunContext):
             )
 
 
-@rule("T1-24", "Inter-company imbalance", requires="QB all entities (Due to/from accounts)")
+@rule("T1-24", "Inter-company imbalance", requires="QB all entities (Due to/from + Loan to/from accounts)")
 def intercompany_imbalance(ctx: RunContext):
     tolerance = float(ctx.config.param("intercompany_tolerance"))
     pattern = re.compile(ctx.config.intercompany_account_pattern)
-    # balances[(debtor, creditor)] per books: 'from X' = X owes me; 'to X' = I owe X
+    # Direction semantics: "Due from X" / "Loan to X" are assets (X owes me);
+    # "Due to X" / "Loan from X" are liabilities (I owe X).
     balances: dict[tuple[str, str, str], float] = {}
     txns = ctx.transactions[ctx.transactions["account"].notna()]
     for _, row in txns.iterrows():
-        m = pattern.match(str(row["account"]).strip())
+        m = pattern.search(str(row["account"]).strip())
         if not m:
             continue
-        direction, counterparty_text = m.group(1).lower(), m.group(2)
+        kind, direction, counterparty_text = (m.group(1).lower(), m.group(2).lower(),
+                                              m.group(3))
         counterparty = ctx.registry.resolve_name(counterparty_text)
         if counterparty is None or counterparty.id == row["entity_id"]:
             continue
         me = row["entity_id"]
-        debtor, creditor = (counterparty.id, me) if direction == "from" else (me, counterparty.id)
+        owes_me = (kind, direction) in {("due", "from"), ("loan", "to")}
+        debtor, creditor = (counterparty.id, me) if owes_me else (me, counterparty.id)
         key = (debtor, creditor, me)  # third element = whose books
         balances[key] = balances.get(key, 0.0) + float(row["amount"])
 
+    entities_with_books = set(ctx.transactions["entity_id"].unique())
     active = ctx.active_entity_ids
     for i, a in enumerate(active):
         for b in active[i + 1:]:
             for debtor, creditor in [(a, b), (b, a)]:
-                per_debtor_books = balances.get((debtor, creditor, debtor), 0.0)
-                per_creditor_books = balances.get((debtor, creditor, creditor), 0.0)
+                # abs(): export sign conventions differ by report; the two
+                # sides are compared on net magnitude
+                per_debtor_books = abs(balances.get((debtor, creditor, debtor), 0.0))
+                per_creditor_books = abs(balances.get((debtor, creditor, creditor), 0.0))
                 if per_debtor_books == 0.0 and per_creditor_books == 0.0:
+                    continue
+                debtor_name = ctx.registry.get(debtor).name
+                creditor_name = ctx.registry.get(creditor).name
+                missing = {debtor, creditor} - entities_with_books
+                if missing:
+                    # Only one side's books are in this run — can't reconcile,
+                    # but record the open balance so it isn't invisible.
+                    missing_name = ctx.registry.get(next(iter(missing))).name
+                    balance = max(per_debtor_books, per_creditor_books)
+                    yield Finding(
+                        rule_id="T1-24",
+                        severity=Severity.INFO,
+                        entity_ids=[debtor, creditor],
+                        question=(
+                            f"Inter-company activity of ${balance:,.2f} recorded between "
+                            f"{debtor_name} (debtor) and {creditor_name} (creditor), but "
+                            f"{missing_name}'s books were not part of this run. Reconcile "
+                            f"both directions once {missing_name}'s exports are ingested."
+                        ),
+                        details={"debtor": debtor, "creditor": creditor,
+                                 "books_missing_for": ", ".join(sorted(missing))},
+                    )
                     continue
                 diff = per_debtor_books - per_creditor_books
                 if abs(diff) <= tolerance:
                     continue
-                debtor_name = ctx.registry.get(debtor).name
-                creditor_name = ctx.registry.get(creditor).name
                 yield Finding(
                     rule_id="T1-24",
                     severity=Severity.HIGH,

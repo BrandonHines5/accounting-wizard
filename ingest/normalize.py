@@ -1,9 +1,23 @@
 """Mapping-driven normalization: raw export → canonical transactions/vendors.
 
-QB Desktop report exports vary by memorized-report configuration, so each
-source is described by a column mapping (config/source_mappings.yaml) instead
-of hardcoded headers. Verify/adjust the mapping against the first real export
-of each report, then it stays stable week to week.
+QB Desktop report exports are messy: title rows above the data, an empty
+"Export Tips" sheet, indent columns, grouped layouts where the vendor/account
+name appears once as a section row, subtotal/total rows, and headers that vary
+by memorized-report configuration. This module:
+
+  1. auto-detects the worksheet and header row by scoring rows against the
+     mapping's expected column names (config/source_mappings.yaml)
+  2. forward-fills grouped-report section headers (e.g. the vendor name row in
+     Vendor Transaction Detail) into a synthetic column rows can map from
+  3. maps source columns → canonical columns; missing *required* columns
+     (date/amount or vendor identity) fail loudly with the file name, missing
+     optional ones warn and fill None
+  4. derives txn_type from the report's Type column where configured, dropping
+     types another report owns (prevents the same check being counted from
+     Check Detail, Vendor Detail, and the GL at once)
+  5. drops subtotal/blank rows (no parseable date or amount), synthesizes a
+     source_id where the report has no Trans # column, and de-duplicates real
+     Trans # collisions across reports by per-report priority
 
 Layout convention for the watched folder:
 
@@ -24,9 +38,75 @@ from core.model import TRANSACTION_COLUMNS, VENDOR_COLUMNS
 
 DEFAULT_MAPPINGS_PATH = REPO_ROOT / "config" / "source_mappings.yaml"
 
+REQUIRED_TXN_FIELDS = {"date", "amount"}
+REQUIRED_VENDOR_FIELDS = {"vendor_name"}
+HEADER_SCAN_ROWS = 25
+
 
 def load_mappings(path: Path | str = DEFAULT_MAPPINGS_PATH) -> dict:
     return yaml.safe_load(Path(path).read_text())
+
+
+def read_report(path: Path, mapping: dict) -> pd.DataFrame:
+    """Read a QB-style export, locating the real header row on any sheet."""
+    expected = {str(v) for v in mapping.get("columns", {}).values()}
+    if path.suffix.lower() == ".csv":
+        sheets = {"csv": pd.read_csv(path, header=None, dtype=object,
+                                     skip_blank_lines=False)}
+    else:
+        sheets = pd.read_excel(path, sheet_name=None, header=None, dtype=object)
+
+    best = None  # (mapping hits, non-empty cells, sheet name, row index, values)
+    for sheet_name, raw in sheets.items():
+        for i in range(min(HEADER_SCAN_ROWS, len(raw))):
+            values = [str(v).strip() if pd.notna(v) else "" for v in raw.iloc[i]]
+            hits = len(expected & set(values))
+            non_empty = sum(1 for v in values if v)
+            if best is None or (hits, non_empty) > (best[0], best[1]):
+                best = (hits, non_empty, sheet_name, i, values)
+
+    if best is None or best[0] == 0:
+        layout = {name: f"{len(df)} rows x {df.shape[1]} cols" for name, df in sheets.items()}
+        raise ValueError(
+            f"{path.name}: no row in the first {HEADER_SCAN_ROWS} rows of any sheet "
+            f"matches the expected headers {sorted(expected)} (sheets: {layout}). "
+            "Update config/source_mappings.yaml to this export's column names."
+        )
+
+    _, _, sheet_name, header_idx, values = best
+    raw = sheets[sheet_name]
+    df = raw.iloc[header_idx + 1:].copy()
+    # Name blank/duplicate headers uniquely (QB indent columns export as blanks)
+    seen: dict[str, int] = {}
+    columns = []
+    for j, v in enumerate(values):
+        name = v or f"_col{j}"
+        if name in seen:
+            seen[name] += 1
+            name = f"{name}.{seen[name]}"
+        else:
+            seen[name] = 0
+        columns.append(name)
+    df.columns = columns
+    return df.dropna(how="all")
+
+
+def apply_group_headers(raw: pd.DataFrame, mapping: dict) -> pd.DataFrame:
+    """Forward-fill grouped-report section values into synthetic columns.
+
+    Grouped QB reports (Vendor Transaction Detail, General Ledger) put the
+    group key — vendor or account — on its own row. Each group_headers entry
+    {column: "_col1", as: "__group_vendor"} carries that value down so detail
+    rows can map it like a normal column. "Total …" closing rows are inert:
+    they're followed immediately by the next section header.
+    """
+    for spec in mapping.get("group_headers", []):
+        source = spec["column"]
+        if source not in raw.columns:
+            continue
+        values = raw[source].where(raw[source].astype(str).str.strip().ne(""))
+        raw[spec["as"]] = values.ffill()
+    return raw
 
 
 def normalize_frame(
@@ -35,29 +115,100 @@ def normalize_frame(
     entity_id: str,
     source_system: str,
     target_columns: list[str],
+    label: str = "export",
 ) -> pd.DataFrame:
     """Apply a column mapping + constants to a raw export frame."""
     columns: dict = mapping.get("columns", {})
     constants: dict = mapping.get("constants", {})
+    required = (REQUIRED_VENDOR_FIELDS if mapping.get("kind") == "vendors"
+                else REQUIRED_TXN_FIELDS)
     out = pd.DataFrame(index=raw.index)
     for canonical in target_columns:
         if canonical in columns:
             source_col = columns[canonical]
-            if source_col not in raw.columns:
+            if source_col in raw.columns:
+                out[canonical] = raw[source_col]
+            elif canonical in required:
                 raise ValueError(
-                    f"Mapping expects column '{source_col}' for '{canonical}' but the "
-                    f"export has: {list(raw.columns)}. Update config/source_mappings.yaml."
+                    f"{label}: mapping expects column '{source_col}' for required field "
+                    f"'{canonical}' but the export has: {list(raw.columns)}. "
+                    "Update config/source_mappings.yaml."
                 )
-            out[canonical] = raw[source_col]
+            else:
+                print(f"  ~ {label}: column '{source_col}' ({canonical}) not found — "
+                      "left blank. Adjust config/source_mappings.yaml if it exists "
+                      "under another name.")
+                out[canonical] = None
         elif canonical in constants:
             out[canonical] = constants[canonical]
         else:
             out[canonical] = None
     out["entity_id"] = entity_id
     out["source_system"] = source_system
-    if mapping.get("drop_na_amount", True) and "amount" in out.columns:
-        out = out[pd.to_numeric(out["amount"], errors="coerce").notna()]
+
+    type_spec = mapping.get("txn_type_from")
+    if type_spec and "txn_type" in target_columns:
+        source_col = type_spec["column"]
+        if source_col not in raw.columns:
+            raise ValueError(f"{label}: txn_type_from column '{source_col}' not in export "
+                             f"({list(raw.columns)})")
+        mapped = raw[source_col].astype(str).str.strip().map(type_spec["values"])
+        out["txn_type"] = mapped
+        if type_spec.get("drop_unmapped", True):
+            dropped = int((mapped.isna() & raw[source_col].notna()
+                           & raw[source_col].astype(str).str.strip().ne("")).sum())
+            if dropped:
+                print(f"  ~ {label}: dropped {dropped} rows with types owned by "
+                      "another report or out of scope")
+            out = out[mapped.notna()]
     return out
+
+
+def clean_transactions(df: pd.DataFrame, label: str = "export") -> pd.DataFrame:
+    """Drop QB report noise: subtotal/total/blank rows without a real date+amount."""
+    if df.empty:
+        return df
+    dates = pd.to_datetime(df["date"], errors="coerce")
+    amounts = pd.to_numeric(df["amount"], errors="coerce")
+    keep = dates.notna() & amounts.notna()
+    dropped = int((~keep).sum())
+    if dropped:
+        print(f"  ~ {label}: dropped {dropped} non-transaction rows "
+              "(section headers/subtotals/blanks)")
+    df = df[keep].copy()
+    df["date"] = dates[keep]
+    df["amount"] = amounts[keep]
+    return df
+
+
+def synthesize_source_ids(df: pd.DataFrame, key: str) -> pd.DataFrame:
+    """Reports without a Trans # column get row-position ids (<report>:<row>).
+
+    Stable within one export; once Trans # is added to the memorized report
+    (Customize Report → Display) real ids take over automatically.
+    """
+    missing = df["source_id"].isna()
+    if missing.any():
+        df = df.copy()
+        df.loc[missing, "source_id"] = [f"{key}:{i}" for i in df.index[missing]]
+    return df
+
+
+def dedupe_transactions(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep each QB transaction once when several reports contain it.
+
+    QB's Trans # is stable across reports, so for every (entity_id, source_id)
+    we keep all rows from the highest-priority report that contains it
+    (priorities in source_mappings.yaml). Synthesized ids never collide, so
+    cross-report overlap for those files is handled by txn_type_from filters.
+    """
+    if df.empty or "_priority" not in df.columns:
+        return df.drop(columns=["_priority"], errors="ignore")
+    has_id = df["source_id"].notna()
+    keyed = df[has_id]
+    best = keyed.groupby(["entity_id", "source_id"])["_priority"].transform("max")
+    out = pd.concat([keyed[keyed["_priority"] == best], df[~has_id]])
+    return out.drop(columns=["_priority"]).sort_index()
 
 
 def ingest_data_dir(
@@ -84,17 +235,28 @@ def ingest_data_dir(
             if mapping is None:
                 print(f"  ! No mapping for {file.name} (key '{key}') — skipped")
                 continue
-            raw = (pd.read_csv(file) if file.suffix.lower() == ".csv"
-                   else pd.read_excel(file))
+            if not mapping.get("enabled", True):
+                print(f"  - {file.name}: mapping disabled "
+                      f"({mapping.get('notes', 'see source_mappings.yaml')})")
+                continue
+            label = f"{entity_dir.name}/{file.name}"
+            raw = apply_group_headers(read_report(file, mapping), mapping)
             source_system = key.split("__", 1)[0]
             if mapping.get("kind") == "vendors":
-                vendor_frames.append(
-                    normalize_frame(raw, mapping, entity_dir.name, source_system, VENDOR_COLUMNS))
+                frame = normalize_frame(raw, mapping, entity_dir.name, source_system,
+                                        VENDOR_COLUMNS, label=label)
+                frame = frame[frame["vendor_name"].notna()]
+                vendor_frames.append(frame)
             else:
-                txn_frames.append(
-                    normalize_frame(raw, mapping, entity_dir.name, source_system, TRANSACTION_COLUMNS))
-    transactions = (pd.concat(txn_frames, ignore_index=True)
+                frame = normalize_frame(raw, mapping, entity_dir.name, source_system,
+                                        TRANSACTION_COLUMNS, label=label)
+                frame = clean_transactions(frame, label=label)
+                frame = synthesize_source_ids(frame, key)
+                frame["_priority"] = mapping.get("priority", 0)
+                txn_frames.append(frame)
+    transactions = (dedupe_transactions(pd.concat(txn_frames, ignore_index=True))
                     if txn_frames else pd.DataFrame(columns=TRANSACTION_COLUMNS))
-    vendors = (pd.concat(vendor_frames, ignore_index=True)
+    vendors = (pd.concat(vendor_frames, ignore_index=True).drop_duplicates(
+                   subset=["entity_id", "vendor_name"])
                if vendor_frames else pd.DataFrame(columns=VENDOR_COLUMNS))
     return transactions, vendors

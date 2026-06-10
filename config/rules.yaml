@@ -10,8 +10,10 @@ defaults:
   fuzzy_dup_amount_tolerance: 1.00
   fuzzy_dup_window_days: 60
 
-  # T1-07: weekdays AP batches normally run (0=Mon … 6=Sun)
-  ap_run_weekdays: [1, 4]   # Tue / Fri — confirm with actual AP cadence
+  # T1-07: weekdays AP batches normally run (0=Mon … 6=Sun).
+  # Empty = rule disabled. Hines data shows Wednesday-dominant cadence
+  # (~60%) — set to [2] only if strict batch days become policy.
+  ap_run_weekdays: []
 
   # T1-10: vendor-name token sort ratio above which two vendors are flagged
   vendor_similarity_threshold: 85
@@ -31,7 +33,9 @@ defaults:
   # T1-30: credit memos / write-offs above this are listed for review
   credit_memo_threshold: 250
 
-# Account-name pattern that identifies inter-company GL accounts.
-# Group 1 = direction (to|from), group 2 = counterparty name, resolved
-# against entity names/aliases in entities.yaml.
-intercompany_account_pattern: "(?i)due\\s+(to|from)\\s+(.+)"
+# Account-name pattern that identifies inter-company GL accounts, e.g.
+# "Due from Beta", "1920 · Loan to 13525WM, LLC". Group 1 = kind (due|loan),
+# group 2 = direction (to|from), group 3 = counterparty name resolved against
+# entity names/aliases in entities.yaml. Direction semantics: due-from and
+# loan-to are assets (they owe me); due-to and loan-from are liabilities.
+intercompany_account_pattern: "(?i)\\b(due|loan)s?\\s+(to|from)\\s+(.+)"

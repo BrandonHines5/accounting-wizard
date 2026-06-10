@@ -32,12 +32,13 @@ class Entity:
         return self.legal_type in NONPROFIT_TYPES
 
     def matches_name(self, text: str) -> bool:
-        """True if `text` refers to this entity (name or alias, case-insensitive)."""
-        needle = _norm(text)
+        """True if `text` refers to this entity (name or alias, case-insensitive,
+        ignoring punctuation and legal suffixes — '13525WM, LLC' matches '13525WM')."""
+        needle = _strip_legal_suffix(_norm(text))
         if not needle:
             return False
         candidates = [self.name, self.id, *self.aliases]
-        return any(_norm(c) == needle for c in candidates)
+        return any(_strip_legal_suffix(_norm(c)) == needle for c in candidates)
 
 
 class EntityRegistry:
@@ -84,3 +85,7 @@ class EntityRegistry:
 
 def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(text).lower())
+
+
+def _strip_legal_suffix(normed: str) -> str:
+    return re.sub(r"(llc|inc|corp|ltd)$", "", normed)

@@ -1,60 +1,93 @@
 # Maps each export file (by filename stem, e.g. qb__check_detail.xlsx) to the
-# canonical transaction/vendor columns. QB Desktop memorized-report headers
-# vary — VERIFY each mapping against the first real export, then leave it alone.
+# canonical transaction/vendor columns. The reader auto-detects the header row
+# and worksheet; these mappings are verified against the real Hines Homes
+# exports (June 2026).
 #
-# kind: transactions (default) | vendors
-# columns:   canonical_column: "Export Header"
-# constants: canonical_column: fixed value
+# kind:           transactions (default) | vendors
+# priority:       when the same QB Trans # appears in several reports, rows
+#                 from the highest-priority report win
+# group_headers:  grouped QB reports put the vendor/account on a section row;
+#                 carry it down so detail rows can map it ({column, as})
+# txn_type_from:  derive txn_type from the report's Type column; unmapped
+#                 types are dropped (another report owns them)
+# columns:        canonical_column: "Export Header" (or _colN for unlabeled)
+# constants:      canonical_column: fixed value
 
-qb__check_detail:
-  columns:
-    source_id: "Trans #"
-    date: "Date"
-    vendor_name: "Name"
-    account: "Account"
-    amount: "Amount"
-    check_no: "Num"
-    memo: "Memo"
-  constants:
-    txn_type: check
-
-qb__general_ledger:
-  columns:
-    source_id: "Trans #"
-    date: "Date"
-    vendor_name: "Name"
-    job_id: "Class"          # or the job column your GL layout uses
-    account: "Account"
-    amount: "Amount"
-    check_no: "Num"
-    memo: "Memo"
-    entered_by: "Last modified by"
-  constants:
-    txn_type: journal
-
+# Vendor Transaction Detail is the canonical source for vendor money movement:
+# bills, bill payments, and direct checks each appear exactly once here.
 qb__vendor_transaction_detail:
+  priority: 30
+  group_headers:
+    - column: "_col1"          # vendor name appears as a section row
+      as: "__vendor"
+  txn_type_from:
+    column: "Type"
+    values:
+      "Bill Pmt -Check": bill_payment
+      "Bill Pmt -CCard": bill_payment
+      "Check": check
+      "Bill": bill
+      # Credit / Deposit / etc. are owned by other reports — dropped here
+  columns:
+    date: "Date"
+    vendor_name: "__vendor"
+    invoice_no: "Num"          # invoice no. on Bills, check no. on payments
+    check_no: "Num"
+    account: "Split"           # the cost / counter account
+    amount: "Amount"
+    memo: "Memo"
+
+# General Ledger: journals only (payments/credits owned by the reports above).
+# TODO: add "Trans #", "Class", and "Last modified by" columns to the
+# memorized GL report to enable journal grouping (T1-21) and entered-by.
+qb__general_ledger:
+  priority: 10
+  group_headers:
+    - column: "_col1"          # account name appears as a section row
+      as: "__account"
+  txn_type_from:
+    column: "Type"
+    values:
+      "General Journal": journal
+  columns:
+    date: "Date"
+    vendor_name: "Name"
+    account: "__account"
+    amount: "Amount"
+    check_no: "Num"
+    memo: "Memo"
+
+qb__credit_memos:
+  priority: 25
   columns:
     source_id: "Trans #"
     date: "Date"
     vendor_name: "Name"
     invoice_no: "Num"
+    job_id: "Class"
     account: "Account"
-    amount: "Amount"
-    memo: "Memo"
-  constants:
-    txn_type: bill_payment
-
-qb__credit_memos:
-  columns:
-    source_id: "Trans #"
-    date: "Date"
-    vendor_name: "Name"
     amount: "Amount"
     memo: "Memo"
     entered_by: "Last modified by"
   constants:
     txn_type: credit_memo
 
+# Check Detail duplicates Vendor Transaction Detail for Tier 1 purposes
+# (same checks, same payments). It becomes the book-side input for Tier 4
+# bank reconciliation — disabled until then to avoid double-counting.
+qb__check_detail:
+  enabled: false
+  notes: "Tier 4 book-side source; Tier 1 payments come from vendor transaction detail"
+  columns:
+    date: "Date"
+    vendor_name: "Name"
+    account: "Account"
+    amount: "Original Amount"
+    check_no: "Num"
+
+# Vendor Contact List.
+# TODO: add "Date Created" (enables T1-11 new-vendor checks) and "Tax ID"
+# (strengthens T1-10 duplicate detection) to the memorized report.
 qb__vendor_list:
   kind: vendors
   columns:

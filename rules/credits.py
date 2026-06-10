@@ -14,21 +14,27 @@ def credit_memo_listing(ctx: RunContext):
     for entity_id in ctx.active_entity_ids:
         df = ctx.entity_transactions(entity_id)
         credits_df = df[df["txn_type"].isin({"credit_memo", "write_off"})]
-        credits_df = credits_df[credits_df["amount"].abs() > threshold]
-        for _, row in credits_df.iterrows():
+        # A credit memo exports as one row per split line — group to the memo
+        for source_id, grp in credits_df.groupby("source_id"):
+            amount = grp["amount"].abs().max()
+            if amount <= threshold:
+                continue
+            row = grp.iloc[0]
+            vendors = grp["vendor_name"].dropna()
+            party = vendors.iloc[0] if not vendors.empty else (row["memo"] or "unspecified party")
             kind = "Write-off" if row["txn_type"] == "write_off" else "Credit memo"
             yield Finding(
                 rule_id="T1-30",
                 severity=Severity.MEDIUM,
                 entity_ids=[entity_id],
                 question=(
-                    f"{kind} of ${abs(row['amount']):,.2f} for "
-                    f"{row['vendor_name'] or row['memo'] or 'unspecified party'} entered by "
+                    f"{kind} of ${amount:,.2f} for {party} entered by "
                     f"{row['entered_by'] or 'unknown'} on {row['date'].date()}. "
                     "What does this credit relate to?"
                 ),
-                details={"entered_by": row["entered_by"], "memo": row["memo"]},
-                transactions=[str(row["source_id"])],
+                details={"entered_by": row["entered_by"], "memo": row["memo"],
+                         "doc_no": row["invoice_no"]},
+                transactions=[str(source_id)],
             )
 
 

@@ -23,7 +23,10 @@ def registry() -> EntityRegistry:
 
 @pytest.fixture(scope="session")
 def config() -> RulesConfig:
-    return RulesConfig.load()
+    config = RulesConfig.load()
+    # T1-07 ships disabled (AP cadence unconfirmed); tests exercise it enabled
+    config.defaults = {**config.defaults, "ap_run_weekdays": [1, 4]}
+    return config
 
 
 @pytest.fixture(scope="session")

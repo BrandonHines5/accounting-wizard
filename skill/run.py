@@ -25,6 +25,11 @@ def main() -> None:
     parser.add_argument("--output", default=None)
     parser.add_argument("--entity", action="append", default=None,
                         help="Limit to specific entity id(s); default = all active")
+    parser.add_argument("--since", default=None,
+                        help="Only analyze transactions on/after this date (YYYY-MM-DD). "
+                             "Weekly runs should scope to the recent window.")
+    parser.add_argument("--until", default=None,
+                        help="Only analyze transactions on/before this date (YYYY-MM-DD)")
     args = parser.parse_args()
 
     registry = EntityRegistry.load()
@@ -48,8 +53,15 @@ def main() -> None:
         transactions = transactions[transactions["entity_id"].isin(args.entity)]
         vendors = vendors[vendors["entity_id"].isin(args.entity)]
 
+    if args.since:
+        transactions = transactions[transactions["date"] >= args.since]
+    if args.until:
+        transactions = transactions[transactions["date"] <= args.until]
+
     print(f"  {len(transactions)} transactions, {len(vendors)} vendors across "
-          f"{transactions['entity_id'].nunique()} entities")
+          f"{transactions['entity_id'].nunique()} entities"
+          + (f" ({args.since or 'start'} → {args.until or 'latest'})"
+             if args.since or args.until else ""))
 
     ctx = RunContext(transactions=transactions, vendors=vendors,
                      registry=registry, config=config)

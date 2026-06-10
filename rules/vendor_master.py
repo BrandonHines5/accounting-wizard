@@ -27,20 +27,40 @@ def _norm_contact(value) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value).lower()) if pd.notna(value) else ""
 
 
+# Tokens too generic to suggest two vendor names refer to the same business
+GENERIC_TOKENS = {"llc", "inc", "co", "corp", "company", "the", "of", "and",
+                  "services", "service", "construction", "homes", "home"}
+
+
+def _name_tokens(name: str) -> set[str]:
+    tokens = set(re.sub(r"[^a-z0-9\s]", " ", str(name).lower()).split())
+    return tokens - GENERIC_TOKENS
+
+
 @rule("T1-10", "Fuzzy duplicate vendors", requires="QB vendor list")
 def fuzzy_duplicate_vendors(ctx: RunContext):
     threshold = float(ctx.config.param("vendor_similarity_threshold"))
     for entity_id in ctx.active_entity_ids:
         vendors = ctx.vendors[ctx.vendors["entity_id"] == entity_id].to_dict("records")
+        for v in vendors:  # precompute for the O(n²) pair scan
+            v["_tokens"] = _name_tokens(v["vendor_name"])
+            for key in ("address", "phone", "ein", "bank_fingerprint"):
+                v[f"_n_{key}"] = _norm_contact(v[key])
         for i in range(len(vendors)):
             for j in range(i + 1, len(vendors)):
                 a, b = vendors[i], vendors[j]
+                shared_contact = any(
+                    a[f"_n_{key}"] and a[f"_n_{key}"] == b[f"_n_{key}"]
+                    for key in ("address", "phone", "ein", "bank_fingerprint"))
+                # cheap gate before the expensive similarity ratio
+                if not shared_contact and not (a["_tokens"] & b["_tokens"]):
+                    continue
                 name_score = token_sort_ratio(str(a["vendor_name"]), str(b["vendor_name"]))
                 shared = [
                     label for label, key in
                     [("address", "address"), ("phone", "phone"), ("EIN", "ein"),
                      ("bank fingerprint", "bank_fingerprint")]
-                    if _norm_contact(a[key]) and _norm_contact(a[key]) == _norm_contact(b[key])
+                    if a[f"_n_{key}"] and a[f"_n_{key}"] == b[f"_n_{key}"]
                 ]
                 if name_score <= threshold and not shared:
                     continue
