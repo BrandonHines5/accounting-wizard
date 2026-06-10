@@ -1,5 +1,7 @@
 # CRITICAL — real financial data must never be committed
-data/
+# (data/* not data/ so the README below can be re-included; everything else
+# inside is still ignored)
+data/*
 output/
 *.xlsx
 *.xls
@@ -12,6 +14,9 @@ output/
 
 # Synthetic test fixtures are safe and explicitly re-included
 !tests/fixtures/*.csv
+
+# Placeholder README so data/ exists in fresh clones (contents stay ignored)
+!data/README.md
 
 # Python
 __pycache__/
