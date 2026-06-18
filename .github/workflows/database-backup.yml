@@ -1,0 +1,136 @@
+name: Database Backup
+
+# Full off-platform backup. Each run dumps the Supabase Postgres database with
+# pg_dump, zips the source code at HEAD, keeps the DB dump as a GitHub artifact,
+# pushes the DB dump + code zip + RESTORE-INSTRUCTIONS.md to a SharePoint library
+# via rclone, and (when S3 creds are set) mirrors the Storage bucket files too.
+#
+# Required configuration:
+#   secrets.SUPABASE_DB_URL   Supabase connection URI (Dashboard > Settings > Database)
+#   secrets.RCLONE_CONF       Full contents of an rclone.conf defining a SharePoint
+#                             remote named `sharepoint`. If unset, off-platform upload
+#                             is skipped (GitHub artifact still made).
+# Optional (repository Variables):
+#   vars.BACKUP_REMOTE_PATH      rclone dest, e.g. "sharepoint:Backups/<ProjectName>".
+#                                Default "sharepoint:Database Backups".
+#   vars.BACKUP_RETENTION_DAYS   Prune dumps/code older than N days. Default 90. 0 = keep all.
+#   vars.PG_MAJOR                Postgres major version to dump with. Default 17.
+# Optional - Storage bucket file backup (also needs RCLONE_CONF):
+#   secrets.SUPABASE_S3_ACCESS_KEY_ID / SUPABASE_S3_SECRET_ACCESS_KEY
+#   vars.SUPABASE_S3_ENDPOINT    e.g. https://<ref>.storage.supabase.co/storage/v1/s3
+#   vars.SUPABASE_S3_REGION      e.g. us-east-2
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # nightly 2 AM UTC (9 PM Central)
+  workflow_dispatch:
+    inputs:
+      backup_reason:
+        description: 'Reason for manual backup'
+        required: false
+        default: 'Manual backup'
+
+jobs:
+  backup-database:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        # The runner's /usr/bin/pg_dump may be older than the Supabase server,
+        # which makes pg_dump abort. Install the matching major version from PGDG
+        # and call its binary explicitly.
+        env:
+          PG_MAJOR: ${{ vars.PG_MAJOR || '17' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates lsb-release
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y "postgresql-client-${PG_MAJOR}"
+          "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_dump" --version
+          echo "/usr/lib/postgresql/${PG_MAJOR}/bin" >> "$GITHUB_PATH"
+
+      - name: Generate backup filename
+        id: filename
+        run: |
+          TS=$(date +%Y-%m-%d_%H-%M-%S)
+          echo "timestamp=$TS" >> $GITHUB_OUTPUT
+          echo "filename=backup_${TS}.sql" >> $GITHUB_OUTPUT
+          mkdir -p backups
+
+      - name: Dump database schema and data
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          PG_MAJOR: ${{ vars.PG_MAJOR || '17' }}
+        run: |
+          "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_dump" "$SUPABASE_DB_URL" \
+            --no-owner --no-privileges --format=plain \
+            --file="backups/${{ steps.filename.outputs.filename }}"
+
+      - name: Compress backup
+        run: gzip "backups/${{ steps.filename.outputs.filename }}"
+
+      - name: Archive source code
+        run: |
+          git archive --format=zip \
+            -o "backups/code_${{ steps.filename.outputs.timestamp }}.zip" HEAD
+
+      - name: Upload backup as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ steps.filename.outputs.timestamp }}
+          path: backups/${{ steps.filename.outputs.filename }}.gz
+          retention-days: 30
+
+      - name: Upload to SharePoint (rclone)
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+          REMOTE_PATH: ${{ vars.BACKUP_REMOTE_PATH }}
+          RETENTION_DAYS: ${{ vars.BACKUP_RETENTION_DAYS }}
+          BACKUP_FILE: backups/${{ steps.filename.outputs.filename }}.gz
+          CODE_FILE: backups/code_${{ steps.filename.outputs.timestamp }}.zip
+          S3_KEY: ${{ secrets.SUPABASE_S3_ACCESS_KEY_ID }}
+          S3_SECRET: ${{ secrets.SUPABASE_S3_SECRET_ACCESS_KEY }}
+          S3_ENDPOINT: ${{ vars.SUPABASE_S3_ENDPOINT }}
+          S3_REGION: ${{ vars.SUPABASE_S3_REGION }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RCLONE_CONF:-}" ]; then
+            echo "::warning::RCLONE_CONF not set - skipping SharePoint upload (artifact still made)."
+            exit 0
+          fi
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          mkdir -p ~/.config/rclone
+          printf '%s' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+          chmod 0600 ~/.config/rclone/rclone.conf
+          DEST="${REMOTE_PATH:-sharepoint:Database Backups}"
+
+          rclone copy "$BACKUP_FILE" "$DEST" --no-traverse
+          rclone copy "$CODE_FILE" "$DEST" --no-traverse
+          rclone copy "RESTORE-INSTRUCTIONS.md" "$DEST" --no-traverse
+
+          DAYS="${RETENTION_DAYS:-90}"
+          if [ "$DAYS" != "0" ]; then
+            rclone delete "$DEST" --min-age "${DAYS}d" \
+              --include "backup_*.sql.gz" --include "code_*.zip" || true
+          fi
+
+          if [ -n "${S3_KEY:-}" ] && [ -n "${S3_SECRET:-}" ] && [ -n "${S3_ENDPOINT:-}" ]; then
+            export RCLONE_CONFIG_SUPASTORAGE_TYPE=s3
+            export RCLONE_CONFIG_SUPASTORAGE_PROVIDER=Other
+            export RCLONE_CONFIG_SUPASTORAGE_ENV_AUTH=false
+            export RCLONE_CONFIG_SUPASTORAGE_ACCESS_KEY_ID="$S3_KEY"
+            export RCLONE_CONFIG_SUPASTORAGE_SECRET_ACCESS_KEY="$S3_SECRET"
+            export RCLONE_CONFIG_SUPASTORAGE_ENDPOINT="$S3_ENDPOINT"
+            export RCLONE_CONFIG_SUPASTORAGE_REGION="${S3_REGION:-us-east-2}"
+            rclone copy supastorage: "${DEST}/storage" --fast-list --transfers 8 --checkers 8
+          else
+            echo "::notice::S3 creds/endpoint not set - skipping Storage file backup."
+          fi
