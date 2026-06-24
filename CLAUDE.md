@@ -72,6 +72,7 @@ analytics/    Tier 2 statistical checks (need baseline)
 tier3/        Tier 3 AI judgment layer (context packet → Claude review → severity/FP/next step)
 bank/         Tier 4: statement extraction, 3-way match, check image reading
 reporting/    exceptions workbook generator
+persistence/  findings history + disposition memory (fingerprint → suppress/escalate)
 supabase/     financial_forensics schema migrations
 tests/        synthetic fixtures + rule tests
 data/         GITIGNORED — real exports land here locally

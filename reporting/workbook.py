@@ -31,7 +31,9 @@ def write_workbook(
     registry: EntityRegistry,
     output_path: Path | str,
     run_label: str | None = None,
+    suppressed: list[Finding] | None = None,
 ) -> Path:
+    suppressed = suppressed or []
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     run_label = run_label or datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -66,12 +68,18 @@ def write_workbook(
             frame = findings_frame(sev_findings)
             frame.to_excel(writer, sheet_name=str(sev), index=False)
         methodology.to_excel(writer, sheet_name="Methodology", index=False)
+        # Only add the disposition-memory sheet when there's something to show, so
+        # the default workbook shape (and its test) is unchanged.
+        if suppressed:
+            findings_frame(suppressed).to_excel(
+                writer, sheet_name="Dispositioned", index=False)
         tier3_reviewed = sum(1 for f in findings if f.ai_assessment)
         pd.DataFrame([
             {"Run": run_label,
              "Entities": ", ".join(e.name for e in registry.active()),
              "Total findings": len(findings),
              "Tier 3 reviewed": f"{tier3_reviewed} of {len(findings)}",
+             "Suppressed (disposition memory)": len(suppressed),
              "Reminder": "Findings are verification questions, not accusations. "
                          "Disposition each one: legit / error_corrected / escalated."}
         ]).to_excel(writer, sheet_name="Run Info", index=False)

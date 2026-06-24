@@ -6,10 +6,17 @@ but Tier 3 / code never silently drops a CRITICAL.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import IntEnum
 
 from core.entities import Entity
+
+# Detail keys that, for a transaction-less finding (e.g. inter-company
+# imbalance), form a stable natural key so its fingerprint is reproducible.
+_FINGERPRINT_DETAIL_KEYS = ("vendor", "vendor_a", "vendor_b", "debtor",
+                            "creditor", "doc_no", "invoice_no", "jobs")
 
 
 class Severity(IntEnum):
@@ -61,6 +68,23 @@ class Finding:
             row["original_severity"] = str(self.original_severity)
         row.update(self.details)
         return row
+
+    def fingerprint(self) -> str:
+        """Stable dedupe key so a dispositioned finding is recognized next run.
+
+        Same rule + same entities + same underlying transactions → same key.
+        Transaction-less findings fall back to the rule's natural-key details.
+        Maps to the `fingerprint` column of the Supabase `findings` table."""
+        payload = {
+            "rule_id": self.rule_id,
+            "entities": sorted(self.entity_ids),
+            "transactions": sorted(str(t) for t in self.transactions),
+        }
+        if not self.transactions:
+            payload["key"] = {k: self.details[k]
+                              for k in _FINGERPRINT_DETAIL_KEYS if k in self.details}
+        blob = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def apply_entity_severity_floor(finding: Finding, entities_by_id: dict[str, Entity]) -> Finding:

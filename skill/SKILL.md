@@ -38,6 +38,13 @@ python -m skill.run --data-dir data --output output/exceptions_$(date +%Y%m%d).x
 `ANTHROPIC_API_KEY` is set, otherwise skipped), `on` (require Claude),
 `heuristic` (deterministic offline triage, no API call), `off`.
 
+**Disposition memory** (`--store`): `none` (default) or `supabase` (needs
+`SUPABASE_URL` + `SUPABASE_SERVICE_KEY`). With a store, each run loads prior
+findings, suppresses exact re-occurrences a human already cleared, escalates
+patterns that recur after a clear, then saves new findings as `open`. Suppressed
+items are listed on the workbook's **Dispositioned** sheet, never silently
+dropped.
+
 ## Standing principles (apply to every run)
 
 1. **Independent source matching** — fraud lives in the gaps between systems
@@ -45,7 +52,8 @@ python -m skill.run --data-dir data --output output/exceptions_$(date +%Y%m%d).x
 2. **Segregation-of-duties monitoring** — map who-creates/approves/pays from QB
    Audit Trail + Adaptive history; flag concentration.
 3. **Disposition memory** — a cleared finding never resurfaces; a repeated
-   pattern after clearing escalates instead (Phase 2, Supabase-backed).
+   pattern after clearing escalates instead. Implemented via `persistence/`
+   (`--store supabase`); without a store, every run starts fresh.
 4. **Tone** — findings are verification questions, not accusations. Errors will
    outnumber fraud 100:1.
 5. **Entity-agnostic** — never hardcode an entity name; nonprofit severity
