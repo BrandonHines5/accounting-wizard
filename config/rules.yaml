@@ -38,6 +38,9 @@ defaults:
   bank_date_tolerance_days: 5      # non-check match: bank date vs book date window
   clearing_gap_days: 30            # recorded→cleared gap beyond this is flagged
 
+  # Tier 4 check-image vision reads (T4-03/04/05)
+  check_image_min_confidence: 90   # read confidence (0–100) below this → human review queue
+
 # Account-name pattern that identifies inter-company GL accounts, e.g.
 # "Due from Beta", "1920 · Loan to 13525WM, LLC". Group 1 = kind (due|loan),
 # group 2 = direction (to|from), group 3 = counterparty name resolved against

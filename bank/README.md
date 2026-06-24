@@ -30,12 +30,24 @@ Build order (Phase 1 pilot — one Hines Homes account, one month):
    - Tolerances in `config/rules.yaml`. Tier-4 findings from an unmatched bank
      line (no book source_id) carry a `bank_ref` natural key so their
      fingerprints stay distinct across re-runs.
-3. `check_images.py` — vision payee/amount/endorsement reads (T4-03/04/05) —
-   *pending*
+3. **`check_images.py` — DONE.** Vision payee/amount/endorsement reads
+   (T4-03/04/05) via `verify_check_images`: T4-03 payee mismatch (read payee ≠
+   recorded vendor) or unreadable image → human-review queue; T4-04 amount
+   alteration (read amount ≠ recorded); T4-05 endorsement anomaly. The vision call
+   is behind `CheckReader` (`AnthropicCheckReader` is the Claude impl, optional
+   dep); reads enrich `payee_read`/`amount_read`/`read_confidence`. Images are
+   fetched from SharePoint at runtime via a caller `fetch_front`/`fetch_back` and
+   never stored.
+
+Wiring: `bank/accounts.py` + `config/bank_accounts.yaml` drive extraction and
+reconciliation from `skill/run.py` (`--bank-dir`, `--bank-accounts`). The
+check-image step is available as a library call (`verify_check_images`); it is not
+yet auto-run from the weekly CLI because it needs the SharePoint image-fetch
+binding for this environment.
 
 Reconciliation is per entity for now; multi-account splitting by
-`account_fingerprint` lands with statement extraction. Findings flow through the
-shared `Finding`/severity/workbook machinery.
+`account_fingerprint` is keyed on the per-account fingerprint. Findings flow
+through the shared `Finding`/severity/workbook machinery.
 
 Image handling: images stay in SharePoint (restricted); Supabase stores reads +
 path reference only. Bank account numbers are hashed fingerprints, never raw.

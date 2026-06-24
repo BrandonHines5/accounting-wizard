@@ -8,10 +8,11 @@ description: Weekly forensic accounting run over all operated entities — inges
 ## What this does
 
 Runs the Tier 1 deterministic rule battery (see `DETECTION_SPEC.md`) over every
-**active entity in `config/entities.yaml`**, passes each finding through the
-Tier 3 AI judgment layer, and writes a severity-ranked, multi-sheet exceptions
-workbook to `output/`. Entities are registry-driven: onboarding a new entity =
-add it to the registry and drop its exports — never edit rule code.
+**active entity in `config/entities.yaml`**, optionally reconciles bank statements
+(**Tier 4**) when they're configured, passes each finding through the Tier 3 AI
+judgment layer, and writes a severity-ranked, multi-sheet exceptions workbook to
+`output/`. Entities are registry-driven: onboarding a new entity = add it to the
+registry and drop its exports — never edit rule code.
 
 The **Tier 3 layer** (`tier3/`) reviews every flag before it reaches the human
 disposition session: for each finding Claude gets the transaction(s), vendor
@@ -44,6 +45,18 @@ findings, suppresses exact re-occurrences a human already cleared, escalates
 patterns that recur after a clear, then saves new findings as `open`. Suppressed
 items are listed on the workbook's **Dispositioned** sheet, never silently
 dropped.
+
+**Tier 4 bank reconciliation** (`--bank-dir`, `--bank-accounts`): runs only when
+`config/bank_accounts.yaml` exists (copy `config/bank_accounts.example.yaml`) and
+matching statement exports are found under `--bank-dir` (default
+`<data-dir>/bank`, gitignored). It extracts each account's register (CSV/Excel, or
+PDF with `pdfplumber`), reconciles bank ↔ books three ways (T4-02/04/06/07/08/09),
+and — when cancelled-check images are available via SharePoint — reads payee,
+amount, and endorsement off each image (T4-03/04/05). Raw account numbers are
+never stored: each account names an env var (`account_number_env`) supplying the
+number at runtime, which is hashed (`core/fingerprint.py`); images stay in
+SharePoint, only reads + path references are kept. Tier 4 findings flow through
+the same disposition memory, Tier 3 review, and workbook as every other finding.
 
 ## Standing principles (apply to every run)
 
