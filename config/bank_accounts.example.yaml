@@ -24,6 +24,13 @@ accounts:
       description: "Description"
       amount: "Amount"                       # signed; negative = money out
       check_no: "Check or Slip #"
+    # Optional: cancelled-check images for T4-03/04/05 vision reads. Images are
+    # synced locally under --check-image-dir (gitignored); `dir` is a subfolder,
+    # patterns use {check_no}/{entity_id}/{account}. Omit the block to skip reads.
+    check_images:
+      dir: "hines-homes/operating"
+      front: "{check_no}_front.jpg"
+      back: "{check_no}_back.jpg"
 
   # Example: a bank that splits debits/credits into two columns instead of a
   # single signed amount. Provide debit + credit and omit amount.

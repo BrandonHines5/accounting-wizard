@@ -39,11 +39,14 @@ Build order (Phase 1 pilot — one Hines Homes account, one month):
    fetched from SharePoint at runtime via a caller `fetch_front`/`fetch_back` and
    never stored.
 
-Wiring: `bank/accounts.py` + `config/bank_accounts.yaml` drive extraction and
-reconciliation from `skill/run.py` (`--bank-dir`, `--bank-accounts`). The
-check-image step is available as a library call (`verify_check_images`); it is not
-yet auto-run from the weekly CLI because it needs the SharePoint image-fetch
-binding for this environment.
+Wiring: `bank/accounts.py` + `config/bank_accounts.yaml` drive extraction,
+reconciliation, and check-image reads from `skill/run.py` (`--bank-dir`,
+`--bank-accounts`, `--check-images`, `--check-image-dir`). Check images are read
+from a local sync via `bank/check_image_source.py` (`LocalCheckImages`) — the
+weekly CLI is a plain Python process with no MCP access, so images are synced down
+from SharePoint into the gitignored `--check-image-dir` (filename patterns per
+account). A SharePoint-direct (Microsoft Graph) source drops in behind the same
+`attach`/`read_front`/`read_back` interface once app credentials are provisioned.
 
 Reconciliation is per entity for now; multi-account splitting by
 `account_fingerprint` is keyed on the per-account fingerprint. Findings flow

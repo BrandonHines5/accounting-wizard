@@ -31,6 +31,21 @@ def test_load_bank_accounts(tmp_path):
     assert a.entity_id == "alpha" and a.fmt == "csv"
     assert a.statement_glob == "alpha/*.csv"
     assert a.columns == {"amount": "Amount"}
+    assert a.check_images == {}                       # absent block → no image reads
+
+
+def test_load_parses_check_images_block(tmp_path):
+    cfg = tmp_path / "bank_accounts.yaml"
+    cfg.write_text(
+        "accounts:\n"
+        "  - entity_id: alpha\n"
+        "    account_number_env: ALPHA_ACCT\n"
+        "    statement_glob: 'alpha/*.csv'\n"
+        "    check_images:\n"
+        "      dir: alpha/op\n"
+        "      front: '{check_no}_f.jpg'\n")
+    (a,) = load_bank_accounts(cfg)
+    assert a.check_images == {"dir": "alpha/op", "front": "{check_no}_f.jpg"}
 
 
 def test_account_number_read_from_env(monkeypatch):

@@ -35,6 +35,9 @@ class BankAccount:
     statement_glob: str
     fmt: str = "csv"                          # csv | xlsx | pdf
     columns: dict = field(default_factory=dict)
+    # Optional cancelled-check image config (Tier 4 T4-03/04/05): a subdir under
+    # --check-image-dir plus front/back filename patterns. Empty → no image reads.
+    check_images: dict = field(default_factory=dict)
 
     def account_number(self) -> str:
         """The raw account number, read from its environment variable at runtime.
@@ -58,6 +61,7 @@ def load_bank_accounts(path: str | Path) -> list[BankAccount]:
             statement_glob=item["statement_glob"],
             fmt=str(item.get("format", "csv")).lower(),
             columns=item.get("columns") or {},
+            check_images=item.get("check_images") or {},
         )
         for item in raw.get("accounts", [])
     ]

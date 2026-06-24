@@ -102,7 +102,61 @@ def _run_tier4(args, registry, config, transactions, known_ids: set[str]) -> lis
     print(f"  Tier 4: reconciling {len(bank)} bank lines across "
           f"{bank['entity_id'].nunique()} account-entities …")
     findings = reconcile_all(transactions, bank, registry, config)
-    print(f"  {len(findings)} Tier 4 findings")
+    print(f"  {len(findings)} reconciliation findings")
+    findings += _run_check_images(args, registry, config, bank, transactions, accounts)
+    return findings
+
+
+def _make_check_reader(mode: str, model: str | None):
+    """Resolve --check-images mode to a CheckReader, or None to skip vision reads."""
+    if mode == "off":
+        return None
+    if mode == "auto" and not os.environ.get("ANTHROPIC_API_KEY"):
+        print("  Check-image reads skipped (no ANTHROPIC_API_KEY).")
+        return None
+    from bank.check_images import MODEL, AnthropicCheckReader
+    return AnthropicCheckReader(model=model or MODEL)
+
+
+def _run_check_images(args, registry, config, bank, transactions, accounts) -> list:
+    """Read cancelled-check images for accounts that configure them and emit
+    T4-03/04/05 findings. Skips cleanly when reads are off, no account configures
+    images, no reader is available, or the image directory is absent."""
+    accts = [a for a in accounts if a.check_images]
+    if not accts:
+        return []
+    reader = _make_check_reader(args.check_images, args.check_image_model)
+    if reader is None:
+        return []
+    image_dir = (Path(args.check_image_dir) if args.check_image_dir
+                 else Path(args.data_dir) / "check-images")
+    if not image_dir.exists():
+        print(f"  Check-image reads skipped (no image dir at {image_dir}).")
+        return []
+
+    from bank.check_image_source import LocalCheckImages
+    from bank.check_images import verify_check_images
+    from core.fingerprint import account_fingerprint
+
+    findings: list = []
+    for account in accts:
+        mask = bank["account_fingerprint"] == account_fingerprint(account.account_number())
+        if not mask.any():
+            continue
+        cfg = account.check_images
+        source = LocalCheckImages(
+            image_dir / (cfg.get("dir") or ""),
+            front_pattern=cfg.get("front", "{check_no}_front.jpg"),
+            back_pattern=cfg.get("back", "{check_no}_back.jpg"),
+            label=account.label)
+        subset = source.attach(bank[mask])
+        _, account_findings = verify_check_images(
+            subset, transactions, reader, registry, config,
+            fetch_front=source.read_front, fetch_back=source.read_back,
+            media_type=source.media_type)
+        findings += account_findings
+    if findings:
+        print(f"  {len(findings)} check-image findings")
     return findings
 
 
@@ -136,6 +190,15 @@ def main() -> None:
                         default=str(REPO_ROOT / "config" / "bank_accounts.yaml"),
                         help="Tier 4 account registry (see bank_accounts.example.yaml). "
                              "Tier 4 is skipped if this file does not exist.")
+    parser.add_argument("--check-images", choices=["auto", "on", "off"], default="auto",
+                        help="Tier 4 cancelled-check vision reads (T4-03/04/05): auto "
+                             "(Claude if ANTHROPIC_API_KEY set + images present, else skip), "
+                             "on, off.")
+    parser.add_argument("--check-image-dir", default=None,
+                        help="Directory of locally-synced cancelled-check images "
+                             "(default: <data-dir>/check-images). Gitignored.")
+    parser.add_argument("--check-image-model", default=None,
+                        help="Override the Claude model id for check-image reads.")
     args = parser.parse_args()
 
     registry = EntityRegistry.load()

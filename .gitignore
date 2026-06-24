@@ -11,6 +11,15 @@ output/
 *.qbw
 *.env
 .env*
+# Check/statement images carry account numbers + signatures — never commit them.
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+*.gif
+*.webp
+*.heic
 
 # Synthetic test fixtures are safe and explicitly re-included
 !tests/fixtures/*.csv

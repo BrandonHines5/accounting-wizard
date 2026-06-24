@@ -51,12 +51,15 @@ dropped.
 matching statement exports are found under `--bank-dir` (default
 `<data-dir>/bank`, gitignored). It extracts each account's register (CSV/Excel, or
 PDF with `pdfplumber`), reconciles bank ↔ books three ways (T4-02/04/06/07/08/09),
-and — when cancelled-check images are available via SharePoint — reads payee,
-amount, and endorsement off each image (T4-03/04/05). Raw account numbers are
-never stored: each account names an env var (`account_number_env`) supplying the
-number at runtime, which is hashed (`core/fingerprint.py`); images stay in
-SharePoint, only reads + path references are kept. Tier 4 findings flow through
-the same disposition memory, Tier 3 review, and workbook as every other finding.
+and — when an account configures `check_images` and the images are synced under
+`--check-image-dir` (`--check-images auto/on/off`, needs `ANTHROPIC_API_KEY`) —
+reads payee, amount, and endorsement off each cancelled check (T4-03/04/05). Raw
+account numbers are never stored: each account names an env var
+(`account_number_env`) supplying the number at runtime, which is hashed
+(`core/fingerprint.py`); images stay in SharePoint (the run reads a local sync,
+never committing them), only reads + path references are kept. Tier 4 findings
+flow through the same disposition memory, Tier 3 review, and workbook as every
+other finding.
 
 ## Standing principles (apply to every run)
 
