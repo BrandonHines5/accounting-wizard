@@ -156,6 +156,63 @@ def test_reconcile_all_merges_both_sides(registry, config):
     assert sev == sorted(sev, reverse=True)   # severity-sorted
 
 
+def _dep_books(rows) -> pd.DataFrame:
+    df = pd.DataFrame(rows, columns=["source_id", "entity_id", "txn_type", "date", "amount"])
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def _dep_bank(registry, rows) -> pd.DataFrame:
+    df = pd.DataFrame(rows, columns=["entity_id", "amount", "date", "description"])
+    df["account_fingerprint"] = "acct-batch"
+    return validate_bank_transactions(df, {e.id for e in registry})
+
+
+def test_batched_deposit_is_absorbed(registry, config):
+    books = _dep_books([
+        ("R1", "alpha", "deposit", "2026-05-05", 100.00),
+        ("R2", "alpha", "deposit", "2026-05-05", 200.00),
+        ("R3", "alpha", "deposit", "2026-05-06", 300.00),
+    ])
+    bank = _dep_bank(registry, [("alpha", 600.00, "2026-05-07", "BATCH DEPOSIT")])
+    # 100+200+300 = 600 → recognized as one batched deposit, no false 'missing'.
+    assert reconcile_deposits(books, bank, registry, config) == []
+
+
+def test_short_batch_flags_only_the_shortfall(registry, config):
+    books = _dep_books([
+        ("R1", "alpha", "deposit", "2026-05-05", 100.00),
+        ("R2", "alpha", "deposit", "2026-05-05", 200.00),
+        ("R3", "alpha", "deposit", "2026-05-06", 300.00),
+    ])
+    bank = _dep_bank(registry, [("alpha", 500.00, "2026-05-07", "DEPOSIT")])
+    findings = reconcile_deposits(books, bank, registry, config)
+    # {200,300}=500 clears; the $100 receipt is the only short/missing piece.
+    assert len(findings) == 1
+    assert findings[0].rule_id == "T4-07" and str(findings[0].severity) == "CRITICAL"
+    assert findings[0].transactions == ["R1"] and findings[0].details["amount"] == 100.0
+
+
+def test_batch_leaves_real_missing_and_unrecorded(registry, config):
+    books = _dep_books([
+        ("R1", "alpha", "deposit", "2026-05-05", 110.00),
+        ("R2", "alpha", "deposit", "2026-05-05", 205.00),
+        ("R3", "alpha", "deposit", "2026-05-06", 320.00),   # 110+205+320 = 635
+        ("R4", "alpha", "deposit", "2026-05-10", 400.00),   # genuinely never deposited
+    ])
+    bank = _dep_bank(registry, [
+        ("alpha", 635.00, "2026-05-07", "BATCH"),           # = R1+R2+R3
+        ("alpha", 55.00, "2026-05-12", "MYSTERY"),          # unrecorded inflow
+    ])
+    findings = reconcile_deposits(books, bank, registry, config)
+    assert len(findings) == 2
+    missing = [f for f in findings if f.transactions == ["R4"]]
+    assert missing and str(missing[0].severity) == "CRITICAL"
+    unrecorded = [f for f in findings if not f.transactions]
+    assert unrecorded and str(unrecorded[0].severity) == "MEDIUM"
+    assert unrecorded[0].details["amount"] == 55.0
+
+
 def test_validate_rejects_unknown_entity(registry):
     bad = pd.DataFrame([{"entity_id": "ghost", "account_fingerprint": "x",
                          "date": "2026-05-01", "amount": -10.0}])

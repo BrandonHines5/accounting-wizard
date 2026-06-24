@@ -25,8 +25,9 @@ Build order (Phase 1 pilot — one Hines Homes account, one month):
    - Deposits (`reconcile_deposits`): T4-07 (short/missing receipt, unexplained
      inflow) and T4-08 (the same for nonprofit donations — routed by registry
      `legal_type`, not entity name). `reconcile_all` runs both.
-   - 1:1 amount+date matching. Batched-deposit composition (many receipts → one
-     bank deposit, subset-sum) and partial-short splits are a later refinement.
+   - Matching is two-pass: 1:1 by amount+date, then a bounded subset-sum batch
+     pass so many receipts deposited as one bank credit aren't each flagged
+     missing; a short batch leaves only the shortfall as the exception.
    - Tolerances in `config/rules.yaml`. Tier-4 findings from an unmatched bank
      line (no book source_id) carry a `bank_ref` natural key so their
      fingerprints stay distinct across re-runs.

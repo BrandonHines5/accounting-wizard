@@ -27,6 +27,8 @@ comes with statement extraction.
 """
 from __future__ import annotations
 
+import itertools
+
 import pandas as pd
 
 from core.config import RulesConfig
@@ -204,6 +206,29 @@ def _unrecorded_deposit(entity_id: str, dep, nonprofit: bool) -> Finding:
         details=base)
 
 
+# Batch-matching bounds: a single bank deposit rarely combines more than a handful
+# of recorded receipts, and we only ever search the nearest candidates in-window.
+_MAX_BATCH_CANDIDATES = 20
+_MAX_BATCH_SIZE = 8
+
+
+def _days_apart(a, b) -> int:
+    return abs((a - b).days)
+
+
+def _subset_to_target(target_cents: int, items: list[tuple], tol_cents: int):
+    """Indices of a ≥2-item subset of `items` ([(idx, cents), …], already ordered by
+    relevance) summing to `target_cents` within `tol_cents`, or None. Bounded to the
+    nearest _MAX_BATCH_CANDIDATES items and subsets up to _MAX_BATCH_SIZE; the
+    smallest qualifying subset wins."""
+    items = [(idx, cents) for idx, cents in items if cents > 0][:_MAX_BATCH_CANDIDATES]
+    for size in range(2, min(len(items), _MAX_BATCH_SIZE) + 1):
+        for combo in itertools.combinations(items, size):
+            if abs(sum(c for _, c in combo) - target_cents) <= tol_cents:
+                return [idx for idx, _ in combo]
+    return None
+
+
 def reconcile_deposits(
     transactions: pd.DataFrame,
     bank: pd.DataFrame,
@@ -212,13 +237,17 @@ def reconcile_deposits(
 ) -> list[Finding]:
     """Match each entity's recorded receipts (book deposits) against bank deposits.
 
-    1:1 amount-and-date matching, which catches individually deposited receipts
-    (wires, ACH, large client checks, single donations). Batched-deposit
-    composition (many recorded receipts → one bank deposit, i.e. subset-sum) and
-    true partial-short splits are a later refinement — see bank/README.md.
+    Two passes: first 1:1 by amount and date (individually deposited receipts —
+    wires, ACH, large client checks, single donations), then a batch pass that
+    explains a bank deposit as the sum of several still-unmatched recorded receipts
+    in the window (subset-sum), so genuinely batched deposits aren't each flagged
+    as missing. Whatever stays unmatched after both passes is the real exception: a
+    leftover receipt is a short/missing deposit, a leftover bank credit is an
+    unexplained inflow.
     """
     amount_tol = float(config.param("bank_amount_tolerance"))
     date_tol = int(config.param("bank_date_tolerance_days"))
+    tol_cents = round(amount_tol * 100)
     by_id = {e.id: e for e in registry}
     active = {e.id for e in registry.active()}
 
@@ -228,29 +257,57 @@ def reconcile_deposits(
         recorded = transactions[
             (transactions["entity_id"] == entity_id)
             & (transactions["txn_type"].isin(BOOK_RECEIPT_TYPES))
-        ].copy()
-        recorded["_amt"] = recorded["amount"].abs()
+        ]
+        deposits = bank[(bank["entity_id"] == entity_id) & (bank["amount"] > 0)]
 
-        deposits = bank[(bank["entity_id"] == entity_id) & (bank["amount"] > 0)].copy()
-        deposits["_amt"] = deposits["amount"].abs()
+        rec_rows = [(idx, row) for idx, row in recorded.iterrows()]
+        dep_rows = [(idx, row) for idx, row in deposits.iterrows()]
+        matched_rec: set = set()
+        matched_dep: set = set()
 
-        matched: set = set()
-        # Recorded receipts → match a bank deposit by amount within the date window.
-        for _, rec in recorded.sort_values("date").iterrows():
-            cands = deposits[
-                (~deposits.index.isin(matched))
-                & ((deposits["_amt"] - rec["_amt"]).abs() <= amount_tol)
-                & ((deposits["date"] - rec["date"]).abs().dt.days <= date_tol)
-            ]
-            if cands.empty:
+        # Pass 1 — 1:1, nearest cleared date wins so matching is order-stable.
+        for ridx, rec in sorted(rec_rows, key=lambda t: t[1]["date"]):
+            r_amt = abs(float(rec["amount"]))
+            best = None
+            for didx, dep in dep_rows:
+                if didx in matched_dep:
+                    continue
+                if (abs(abs(float(dep["amount"])) - r_amt) <= amount_tol
+                        and _days_apart(dep["date"], rec["date"]) <= date_tol):
+                    dist = _days_apart(dep["date"], rec["date"])
+                    if best is None or dist < best[0]:
+                        best = (dist, didx)
+            if best is not None:
+                matched_dep.add(best[1])
+                matched_rec.add(ridx)
+
+        # Pass 2 — a bank deposit = the sum of several in-window recorded receipts.
+        for didx, dep in dep_rows:
+            if didx in matched_dep:
+                continue
+            target = round(abs(float(dep["amount"])) * 100)
+            cands = [(ridx, rec) for ridx, rec in rec_rows
+                     if ridx not in matched_rec
+                     and _days_apart(rec["date"], dep["date"]) <= date_tol]
+            cands.sort(key=lambda c: (_days_apart(c[1]["date"], dep["date"]),
+                                      abs(float(c[1]["amount"]))))
+            items = [(ridx, round(abs(float(rec["amount"])) * 100)) for ridx, rec in cands]
+            subset = _subset_to_target(target, items, tol_cents)
+            if subset:
+                matched_dep.add(didx)
+                matched_rec.update(subset)
+
+        # Leftovers are the exceptions.
+        for ridx, rec in rec_rows:
+            if ridx not in matched_rec:
+                rec = rec.copy()
+                rec["_amt"] = abs(float(rec["amount"]))
                 findings.append(_missing_deposit(entity_id, rec, nonprofit))
-            else:
-                # Nearest cleared date wins, so matching is order-stable.
-                matched.add((cands["date"] - rec["date"]).abs().idxmin())
-
-        # Bank deposits with no recorded receipt → unexplained inflow.
-        for _, dep in deposits[~deposits.index.isin(matched)].iterrows():
-            findings.append(_unrecorded_deposit(entity_id, dep, nonprofit))
+        for didx, dep in dep_rows:
+            if didx not in matched_dep:
+                dep = dep.copy()
+                dep["_amt"] = abs(float(dep["amount"]))
+                findings.append(_unrecorded_deposit(entity_id, dep, nonprofit))
 
     findings.sort(key=lambda f: (-int(f.severity), f.rule_id))
     return findings
