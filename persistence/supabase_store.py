@@ -37,10 +37,26 @@ _SENSITIVE_DETAIL_KEYS = {
 }
 
 
-def _scrub_details(details: dict) -> dict:
-    """Drop any sensitive image/account fields before they reach Supabase."""
-    return {k: v for k, v in (details or {}).items()
-            if k.lower() not in _SENSITIVE_DETAIL_KEYS}
+def _norm_key(key) -> str:
+    """Case- and separator-insensitive key form (accountNumber → accountnumber)."""
+    return "".join(ch for ch in str(key).lower() if ch.isalnum())
+
+
+_SENSITIVE_NORMALIZED = {_norm_key(k) for k in _SENSITIVE_DETAIL_KEYS}
+
+
+def _scrub_details(value):
+    """Recursively drop sensitive image/account fields before persisting.
+
+    Keys are normalized so camelCase / snake_case variants are all caught, and
+    nested dicts/lists (e.g. OCR payloads) are scrubbed too — this adapter is the
+    single enforcement point for the no-images / no-raw-accounts hard rule."""
+    if isinstance(value, dict):
+        return {k: _scrub_details(v) for k, v in value.items()
+                if _norm_key(k) not in _SENSITIVE_NORMALIZED}
+    if isinstance(value, list):
+        return [_scrub_details(item) for item in value]
+    return value
 
 
 class SupabaseFindingsStore(FindingsStore):

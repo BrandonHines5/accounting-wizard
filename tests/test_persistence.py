@@ -5,8 +5,20 @@ from openpyxl import load_workbook
 from core.findings import Finding, Severity
 from persistence import InMemoryFindingsStore, apply_disposition_memory
 from persistence.findings_store import _pattern_key
+from persistence.supabase_store import _scrub_details
 from reporting.workbook import write_workbook
 from rules.engine import run_all
+
+
+def test_scrub_details_normalizes_keys_and_recurses():
+    out = _scrub_details({
+        "vendor": "Acme",
+        "accountNumber": "12345",          # camelCase variant
+        "check_image": b"...",
+        "nested": {"routingNumber": "999", "amount": 5},
+        "reads": [{"backImage": "x", "payee": "Acme"}],
+    })
+    assert out == {"vendor": "Acme", "nested": {"amount": 5}, "reads": [{"payee": "Acme"}]}
 
 
 @pytest.fixture
