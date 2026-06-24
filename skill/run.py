@@ -1,9 +1,16 @@
-"""Weekly run: ingest → Tier 1 rules → disposition memory → Tier 3 → workbook.
+"""Weekly run: ingest → Tier 1 rules → Tier 4 bank reconciliation → disposition
+memory → Tier 3 → workbook.
+
+Tier 4 runs only when config/bank_accounts.yaml exists and matching statement
+files are found under --bank-dir; otherwise it is skipped and the run is exactly
+the Tier 1 pipeline. Tier 4 findings flow through the same disposition memory,
+Tier 3 review, persistence, and workbook as every other finding.
 
 Usage:
     python -m skill.run [--data-dir data] [--output output/exceptions.xlsx]
                         [--entity <id> ...] [--tier3 auto|on|off|heuristic]
                         [--store none|supabase]
+                        [--bank-dir <dir>] [--bank-accounts config/bank_accounts.yaml]
 """
 from __future__ import annotations
 
@@ -57,6 +64,48 @@ def _make_judge(mode: str, model: str | None):
     return judge
 
 
+def _run_tier4(args, registry, config, transactions, known_ids: set[str]) -> list:
+    """Extract configured bank statements and reconcile them against the books.
+
+    Skips cleanly (returning []) when Tier 4 isn't set up — no account registry,
+    no statements directory, or nothing matching the window — so a Tier-1-only run
+    needs no extra flags. Findings are merged into the main list and reviewed like
+    any other."""
+    accounts_path = Path(args.bank_accounts)
+    if not accounts_path.exists():
+        return []
+    from bank.accounts import extract_statements, load_bank_accounts
+    from bank.reconcile import reconcile_all
+
+    accounts = load_bank_accounts(accounts_path)
+    if args.entity:
+        accounts = [a for a in accounts if a.entity_id in set(args.entity)]
+    if not accounts:
+        return []
+
+    bank_dir = Path(args.bank_dir) if args.bank_dir else Path(args.data_dir) / "bank"
+    if not bank_dir.exists():
+        print(f"  Tier 4 skipped (no bank statements dir at {bank_dir}).")
+        return []
+
+    bank = extract_statements(
+        accounts, bank_dir, known_ids,
+        on_error=lambda path, exc: print(f"  Tier 4: skipped {path.name} — {exc}"))
+    if args.since:
+        bank = bank[bank["date"] >= args.since]
+    if args.until:
+        bank = bank[bank["date"] <= args.until]
+    if bank.empty:
+        print("  Tier 4 skipped (no bank statement lines matched the window).")
+        return []
+
+    print(f"  Tier 4: reconciling {len(bank)} bank lines across "
+          f"{bank['entity_id'].nunique()} account-entities …")
+    findings = reconcile_all(transactions, bank, registry, config)
+    print(f"  {len(findings)} Tier 4 findings")
+    return findings
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Tier 1 forensics battery.")
     parser.add_argument("--data-dir", default=str(REPO_ROOT / "data"))
@@ -80,6 +129,13 @@ def main() -> None:
     parser.add_argument("--supabase-schema", default=None,
                         help="Supabase schema holding the findings table "
                              "(default: financial_forensics).")
+    parser.add_argument("--bank-dir", default=None,
+                        help="Directory of bank statement exports for Tier 4 "
+                             "(default: <data-dir>/bank). Gitignored.")
+    parser.add_argument("--bank-accounts",
+                        default=str(REPO_ROOT / "config" / "bank_accounts.yaml"),
+                        help="Tier 4 account registry (see bank_accounts.example.yaml). "
+                             "Tier 4 is skipped if this file does not exist.")
     args = parser.parse_args()
 
     registry = EntityRegistry.load()
@@ -116,7 +172,9 @@ def main() -> None:
     ctx = RunContext(transactions=transactions, vendors=vendors,
                      registry=registry, config=config)
     findings = run_all(ctx)
-    print(f"  {len(findings)} findings")
+    print(f"  {len(findings)} Tier 1 findings")
+
+    findings += _run_tier4(args, registry, config, transactions, known_ids)
 
     entities_by_id = {e.id: e for e in registry}
 

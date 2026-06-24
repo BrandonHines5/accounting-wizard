@@ -22,6 +22,10 @@ output/
 data/*/*
 !data/*/.gitkeep
 
+# Tier 4 bank-account registry — the real one references account structure and
+# env-secret names; keep it local. The committed template is bank_accounts.example.yaml.
+config/bank_accounts.yaml
+
 # Python
 __pycache__/
 *.pyc
