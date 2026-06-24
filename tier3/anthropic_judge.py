@@ -101,6 +101,10 @@ class AnthropicJudge(Judge):
 def _parse(response, fallback: Severity) -> Tier3Assessment:
     """Map a structured-output response into a Tier3Assessment."""
     text = next((b.text for b in response.content if getattr(b, "type", None) == "text"), "")
+    if not text.strip():
+        # No text block (e.g. a refusal or thinking-only reply). Fail explicitly
+        # so assess_all routes it to a clear _failed_assessment, not a JSON crash.
+        raise ValueError("Tier 3 response carried no text block to parse")
     data = json.loads(text)
     return Tier3Assessment(
         assessment=data.get("assessment", ""),

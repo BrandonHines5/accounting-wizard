@@ -43,7 +43,7 @@ def _make_judge(mode: str, model: str | None):
             _ = judge.client
         except Exception as exc:  # noqa: BLE001 — surface a clear startup error
             raise SystemExit(
-                f"--tier3 on requires the Anthropic SDK and credentials: {exc}")
+                f"--tier3 on requires the Anthropic SDK and credentials: {exc}") from exc
     return judge
 
 

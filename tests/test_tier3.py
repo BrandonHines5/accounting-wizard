@@ -205,3 +205,17 @@ def test_anthropic_judge_builds_request_and_parses_response(ctx, registry, findi
     assert f.original_severity == Severity.CRITICAL
     assert f.false_positive_probability == 0.7
     assert f.details["innocent_explanation"].startswith("First check")
+
+
+def test_anthropic_judge_empty_response_degrades_not_crashes(ctx, findings):
+    # A refusal / thinking-only reply has no text block — must surface as a clear
+    # failed assessment that preserves severity, not a JSONDecodeError.
+    client = _FakeClient("")
+    judge = AnthropicJudge(client=client)
+    crit = find(findings, "T1-01")
+    f = Finding(crit.rule_id, crit.severity, crit.entity_ids, crit.question,
+                transactions=crit.transactions)
+    packets = build_packets([f], ctx)
+    apply_tier3([f], packets, judge)
+    assert f.severity == Severity.CRITICAL
+    assert "unavailable" in f.ai_assessment
