@@ -6,7 +6,17 @@ matching, and nonprofit donation reconciliation (runs for every registry entity
 with `legal_type: nonprofit_501c3`).
 
 Build order (Phase 1 pilot — one Hines Homes account, one month):
-1. `statement_extract.py` — PDF register → bank_transactions rows — *pending*
+1. **`statement_extract.py` — DONE.** Register (CSV/Excel export or PDF) →
+   canonical `bank_transactions`. `normalize_register` is the tested core: signed
+   amounts (negative = money out, handling `$1,234.56` / `(1,234.56)` / debit-credit
+   pairs), parsed dates, normalized check numbers, and a **hashed account
+   fingerprint** (`core/fingerprint.py`, shared with the vendors table's
+   `bank_fingerprint` so the two are comparable) — the raw account number is hashed
+   on the way in and never stored. `extract_export` wraps CSV/Excel (the common
+   path); `extract_pdf` is a best-effort pdfplumber adapter (optional dep).
+   Remaining to wire into the weekly run: a per-account config (entity → statement
+   glob + column mapping; raw account number from an env secret, never committed)
+   then `reconcile_all` on the extracted rows.
 2. **`model.py` + `reconcile.py` — DONE.** Canonical `bank_transactions` model and
    reconciliation:
    - Disbursements (`reconcile`): T4-02 (unrecorded cleared check / outstanding
