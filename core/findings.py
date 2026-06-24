@@ -15,8 +15,13 @@ from core.entities import Entity
 
 # Detail keys that, for a transaction-less finding (e.g. inter-company
 # imbalance), form a stable natural key so its fingerprint is reproducible.
+# `bank_ref` is the bank-side natural key (hashed account + date + amount +
+# check/description) for Tier 4 findings derived from a bank line with no book
+# source_id — without it, two distinct unmatched bank lines for one entity would
+# share a fingerprint and one would be lost on upsert. It is bank-specific, so
+# adding it here never alters any existing non-bank rule's fingerprint.
 _FINGERPRINT_DETAIL_KEYS = ("vendor", "vendor_a", "vendor_b", "debtor",
-                            "creditor", "doc_no", "invoice_no", "jobs")
+                            "creditor", "doc_no", "invoice_no", "jobs", "bank_ref")
 
 
 class Severity(IntEnum):

@@ -7,12 +7,21 @@ with `legal_type: nonprofit_501c3`).
 
 Build order (Phase 1 pilot — one Hines Homes account, one month):
 1. `statement_extract.py` — PDF register → bank_transactions rows — *pending*
-2. **`model.py` + `reconcile.py` — DONE.** Canonical `bank_transactions` model and the
-   three-way match: T4-02 (unrecorded cleared check / outstanding book check),
-   T4-04 (cleared ≠ recorded amount), T4-06 (clearing-gap outliers), T4-09
-   (non-check disbursement sweep). Tolerances in `config/rules.yaml`.
-3. `check_images.py` — vision payee/amount/endorsement reads (T4-03/04/05),
-   deposit-side match (T4-07/08) — *pending*
+2. **`model.py` + `reconcile.py` — DONE.** Canonical `bank_transactions` model and
+   reconciliation:
+   - Disbursements (`reconcile`): T4-02 (unrecorded cleared check / outstanding
+     book check), T4-04 (cleared ≠ recorded amount), T4-06 (clearing-gap
+     outliers), T4-09 (non-check disbursement sweep).
+   - Deposits (`reconcile_deposits`): T4-07 (short/missing receipt, unexplained
+     inflow) and T4-08 (the same for nonprofit donations — routed by registry
+     `legal_type`, not entity name). `reconcile_all` runs both.
+   - 1:1 amount+date matching. Batched-deposit composition (many receipts → one
+     bank deposit, subset-sum) and partial-short splits are a later refinement.
+   - Tolerances in `config/rules.yaml`. Tier-4 findings from an unmatched bank
+     line (no book source_id) carry a `bank_ref` natural key so their
+     fingerprints stay distinct across re-runs.
+3. `check_images.py` — vision payee/amount/endorsement reads (T4-03/04/05) —
+   *pending*
 
 Reconciliation is per entity for now; multi-account splitting by
 `account_fingerprint` lands with statement extraction. Findings flow through the
