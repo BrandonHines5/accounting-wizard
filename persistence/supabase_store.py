@@ -22,7 +22,25 @@ from core.findings import Finding
 from persistence.findings_store import FindingsStore
 
 DEFAULT_SCHEMA = "financial_forensics"
-_SELECT = "fingerprint,rule_id,severity,entity_ids,disposition,details,question"
+# Read back everything save() writes, so persistence-backed Tier 3 sees its own
+# prior review context (transaction_refs + ai_assessment) on the next run.
+_SELECT = ("fingerprint,rule_id,severity,entity_ids,disposition,details,"
+           "question,transaction_refs,ai_assessment")
+
+# Hard rule (CLAUDE.md): never persist check/statement images or raw bank account
+# numbers — only reads, SharePoint path references, and hashed fingerprints. This
+# adapter is the single enforcement point, so it scrubs regardless of upstream.
+_SENSITIVE_DETAIL_KEYS = {
+    "image", "image_bytes", "image_data", "check_image", "statement_image",
+    "front_image", "back_image", "account_number", "account_no", "acct_number",
+    "bank_account", "raw_account", "routing_number",
+}
+
+
+def _scrub_details(details: dict) -> dict:
+    """Drop any sensitive image/account fields before they reach Supabase."""
+    return {k: v for k, v in (details or {}).items()
+            if k.lower() not in _SENSITIVE_DETAIL_KEYS}
 
 
 class SupabaseFindingsStore(FindingsStore):
@@ -57,7 +75,7 @@ class SupabaseFindingsStore(FindingsStore):
             "severity": str(finding.severity),
             "entity_ids": list(finding.entity_ids),
             "question": finding.question,
-            "details": finding.details,
+            "details": _scrub_details(finding.details),
             "transaction_refs": list(finding.transactions),
             "ai_assessment": finding.ai_assessment or None,
         }

@@ -92,26 +92,42 @@ def test_open_prior_is_not_suppressed(ctx, registry, findings):
 
 
 def test_recurrence_after_clear_escalates(ctx, registry, findings):
-    memo = find(findings, "T1-30")          # MEDIUM credit memo on beta
-    assert memo.severity == Severity.MEDIUM
-    # A *different* finding (other fingerprint) of the same pattern was cleared.
+    off = find(findings, "T1-07")           # MEDIUM off-cycle payment, vendor present
+    assert off.severity == Severity.MEDIUM
+    vendor = off.details["vendor"]
+    # A *different* finding (other fingerprint) of the same vendor pattern was cleared.
     prior = InMemoryFindingsStore([{
-        "fingerprint": "previously-cleared-fp", "rule_id": "T1-30",
-        "entity_ids": ["beta"], "disposition": "error_corrected", "details": {},
+        "fingerprint": "previously-cleared-fp", "rule_id": "T1-07",
+        "entity_ids": ["alpha"], "disposition": "error_corrected",
+        "details": {"vendor": vendor},
     }]).load_prior()
 
     kept, suppressed = apply_disposition_memory(findings, prior, entities_map(registry))
-    escalated = find(kept, "T1-30")
+    escalated = find(kept, "T1-07")
     assert escalated.severity == Severity.HIGH      # MEDIUM → HIGH
     assert "Recurs after a prior clear" in escalated.details["recurrence"]
     assert escalated not in suppressed
 
 
-def test_pattern_key_keys_off_rule_entities_vendor():
+def test_vendorless_clear_does_not_escalate_unrelated(ctx, registry, findings):
+    # A cleared finding with no vendor key must NOT escalate every later finding
+    # of the same rule/entity — there's no discriminator to call it a recurrence.
+    memo = find(findings, "T1-30")          # credit memo on beta, no vendor detail
+    prior = InMemoryFindingsStore([{
+        "fingerprint": "previously-cleared-fp", "rule_id": "T1-30",
+        "entity_ids": ["beta"], "disposition": "error_corrected", "details": {},
+    }]).load_prior()
+    kept, _ = apply_disposition_memory(findings, prior, entities_map(registry))
+    assert find(kept, "T1-30").severity == memo.severity        # unchanged
+    assert "recurrence" not in find(kept, "T1-30").details
+
+
+def test_pattern_key_requires_vendor():
     assert _pattern_key("T1-01", ["beta", "alpha"], {"vendor": "Acme"}) \
         == _pattern_key("T1-01", ["alpha", "beta"], {"vendor": "Acme"})
     assert _pattern_key("T1-01", ["alpha"], {"vendor": "Acme"}) \
         != _pattern_key("T1-01", ["alpha"], {"vendor": "Other"})
+    assert _pattern_key("T1-30", ["beta"], {}) is None         # no vendor → no key
 
 
 # ---------------------------------------------------------------- workbook surfacing

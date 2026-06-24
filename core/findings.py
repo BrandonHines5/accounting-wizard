@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from enum import IntEnum
+from enum import Enum, IntEnum
 
 from core.entities import Entity
 
@@ -29,6 +29,19 @@ class Severity(IntEnum):
         return self.name
 
 
+class Disposition(str, Enum):
+    """Allowed states for a finding once a human reviews it (str-valued so the
+    members compare and serialize as their lowercase wire/DB strings)."""
+
+    OPEN = "open"
+    LEGIT = "legit"
+    ERROR_CORRECTED = "error_corrected"
+    ESCALATED = "escalated"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 # Rule families where a nonprofit entity's involvement means possible
 # misallocation of restricted/charitable funds → HIGH severity minimum.
 MISALLOCATION_RULES = {"T1-20", "T1-21", "T1-22", "T1-23", "T1-24"}
@@ -42,7 +55,7 @@ class Finding:
     question: str                      # the verification question for the reviewer
     details: dict = field(default_factory=dict)
     transactions: list[str] = field(default_factory=list)  # source_ids involved
-    disposition: str = "open"          # open | legit | error_corrected | escalated
+    disposition: Disposition = Disposition.OPEN
 
     # Tier 3 (AI judgment layer) — populated by tier3.apply_tier3, empty until then.
     ai_assessment: str = ""            # plain-English review, 2–4 sentences
@@ -62,7 +75,7 @@ class Finding:
             "false_positive": ("" if self.false_positive_probability is None
                                else f"{self.false_positive_probability:.0%}"),
             "transactions": ", ".join(self.transactions),
-            "disposition": self.disposition,
+            "disposition": str(self.disposition),
         }
         if self.original_severity is not None:
             row["original_severity"] = str(self.original_severity)

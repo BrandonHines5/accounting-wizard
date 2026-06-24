@@ -21,10 +21,15 @@ from abc import ABC, abstractmethod
 import pandas as pd
 
 from core.entities import Entity
-from core.findings import Finding, Severity, apply_entity_severity_floor
+from core.findings import (
+    Disposition,
+    Finding,
+    Severity,
+    apply_entity_severity_floor,
+)
 
 # Dispositions that mean a human resolved the finding (vs. open / escalated).
-_CLEARED = {"legit", "error_corrected"}
+_CLEARED = {str(Disposition.LEGIT), str(Disposition.ERROR_CORRECTED)}
 
 # Detail keys used to identify "the same kind of issue" for recurrence-escalation.
 _PATTERN_VENDOR_KEYS = ("vendor", "vendor_a", "debtor")
@@ -65,7 +70,7 @@ class InMemoryFindingsStore(FindingsStore):
                 "fingerprint": fp,
                 "rule_id": f.rule_id,
                 "entity_ids": list(f.entity_ids),
-                "disposition": "open",
+                "disposition": str(Disposition.OPEN),
                 "details": dict(f.details),
                 "question": f.question,
             })
@@ -79,8 +84,12 @@ def _as_list(value) -> list[str]:
     return []
 
 
-def _pattern_key(rule_id: str, entity_ids, details: dict | None) -> str:
-    """Coarse identity for recurrence detection: rule + entities + primary vendor."""
+def _pattern_key(rule_id: str, entity_ids, details: dict | None) -> str | None:
+    """Coarse identity for recurrence detection: rule + entities + primary vendor.
+
+    Returns None when no vendor key is present — without that discriminator the
+    key would be just rule+entities, so one cleared finding would wrongly escalate
+    every later finding of the same rule/entities. No vendor → no recurrence."""
     details = details or {}
     vendor = ""
     for key in _PATTERN_VENDOR_KEYS:
@@ -88,6 +97,8 @@ def _pattern_key(rule_id: str, entity_ids, details: dict | None) -> str:
         if val:
             vendor = str(val)
             break
+    if not vendor:
+        return None
     return f"{rule_id}|{','.join(sorted(_as_list(entity_ids)))}|{vendor}"
 
 
@@ -116,11 +127,12 @@ def apply_disposition_memory(
     if prior is None or len(prior) == 0 or "fingerprint" not in prior.columns:
         return list(findings), []
 
-    cleared = prior[prior["disposition"].isin(_CLEARED)]
+    cleared = prior[prior["disposition"].astype(str).isin(_CLEARED)]
     cleared_fingerprints = set(cleared["fingerprint"])
     cleared_patterns = {
-        _pattern_key(row["rule_id"], row.get("entity_ids"), row.get("details"))
-        for _, row in cleared.iterrows()
+        key for _, row in cleared.iterrows()
+        if (key := _pattern_key(row["rule_id"], row.get("entity_ids"),
+                                row.get("details"))) is not None
     }
 
     kept: list[Finding] = []
@@ -131,7 +143,8 @@ def apply_disposition_memory(
                 "Suppressed: previously reviewed and dispositioned as resolved.")
             suppressed.append(finding)
             continue
-        if _pattern_key(finding.rule_id, finding.entity_ids, finding.details) in cleared_patterns:
+        pattern = _pattern_key(finding.rule_id, finding.entity_ids, finding.details)
+        if pattern is not None and pattern in cleared_patterns:
             _escalate(finding, entities_by_id)
         kept.append(finding)
 
