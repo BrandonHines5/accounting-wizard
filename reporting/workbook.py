@@ -21,7 +21,8 @@ SEVERITY_ORDER = [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.IN
 def findings_frame(findings: list[Finding]) -> pd.DataFrame:
     if not findings:
         return pd.DataFrame(columns=["rule_id", "severity", "entities", "question",
-                                     "transactions", "disposition"])
+                                     "ai_assessment", "recommended_action",
+                                     "false_positive", "transactions", "disposition"])
     return pd.DataFrame([f.to_row() for f in findings])
 
 
@@ -65,10 +66,12 @@ def write_workbook(
             frame = findings_frame(sev_findings)
             frame.to_excel(writer, sheet_name=str(sev), index=False)
         methodology.to_excel(writer, sheet_name="Methodology", index=False)
+        tier3_reviewed = sum(1 for f in findings if f.ai_assessment)
         pd.DataFrame([
             {"Run": run_label,
              "Entities": ", ".join(e.name for e in registry.active()),
              "Total findings": len(findings),
+             "Tier 3 reviewed": f"{tier3_reviewed} of {len(findings)}",
              "Reminder": "Findings are verification questions, not accusations. "
                          "Disposition each one: legit / error_corrected / escalated."}
         ]).to_excel(writer, sheet_name="Run Info", index=False)

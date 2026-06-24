@@ -8,10 +8,17 @@ description: Weekly forensic accounting run over all operated entities — inges
 ## What this does
 
 Runs the Tier 1 deterministic rule battery (see `DETECTION_SPEC.md`) over every
-**active entity in `config/entities.yaml`** and writes a severity-ranked,
-multi-sheet exceptions workbook to `output/`. Entities are registry-driven:
-onboarding a new entity = add it to the registry and drop its exports — never
-edit rule code.
+**active entity in `config/entities.yaml`**, passes each finding through the
+Tier 3 AI judgment layer, and writes a severity-ranked, multi-sheet exceptions
+workbook to `output/`. Entities are registry-driven: onboarding a new entity =
+add it to the registry and drop its exports — never edit rule code.
+
+The **Tier 3 layer** (`tier3/`) reviews every flag before it reaches the human
+disposition session: for each finding Claude gets the transaction(s), vendor
+history, who entered it, and any prior dispositions, and returns a plain-English
+assessment, a confirmed/adjusted severity, a false-positive probability with the
+specific innocent explanation, and a recommended next step. It may downgrade a
+finding **only with a stated reason** and never silently drops a CRITICAL.
 
 ## Inputs
 
@@ -22,10 +29,14 @@ See the weekly export checklist in `FORENSICS_AGENT_KICKOFF.md` §3.
 ## Run
 
 ```bash
-python -m skill.run                       # all active entities
+python -m skill.run                       # all active entities; Tier 3 = auto
 python -m skill.run --entity hines-homes  # pilot scope
 python -m skill.run --data-dir data --output output/exceptions_$(date +%Y%m%d).xlsx
 ```
+
+**Tier 3 modes** (`--tier3`): `auto` (default — Claude review when
+`ANTHROPIC_API_KEY` is set, otherwise skipped), `on` (require Claude),
+`heuristic` (deterministic offline triage, no API call), `off`.
 
 ## Standing principles (apply to every run)
 

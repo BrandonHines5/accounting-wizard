@@ -37,16 +37,29 @@ class Finding:
     transactions: list[str] = field(default_factory=list)  # source_ids involved
     disposition: str = "open"          # open | legit | error_corrected | escalated
 
+    # Tier 3 (AI judgment layer) — populated by tier3.apply_tier3, empty until then.
+    ai_assessment: str = ""            # plain-English review, 2–4 sentences
+    false_positive_probability: float | None = None   # 0.0–1.0, None = not assessed
+    recommended_action: str = ""       # clear | verify | escalate
+    original_severity: Severity | None = None  # set only when Tier 3 changed severity
+
     def to_row(self) -> dict:
-        return {
+        row = {
             "rule_id": self.rule_id,
             "severity": str(self.severity),
             "entities": ", ".join(self.entity_ids),
             "question": self.question,
+            "ai_assessment": self.ai_assessment,
+            "recommended_action": self.recommended_action,
+            "false_positive": ("" if self.false_positive_probability is None
+                               else f"{self.false_positive_probability:.0%}"),
             "transactions": ", ".join(self.transactions),
             "disposition": self.disposition,
-            **self.details,
         }
+        if self.original_severity is not None:
+            row["original_severity"] = str(self.original_severity)
+        row.update(self.details)
+        return row
 
 
 def apply_entity_severity_floor(finding: Finding, entities_by_id: dict[str, Entity]) -> Finding:

@@ -69,6 +69,7 @@ skill/        Claude Code skill (entry point for weekly runs)
 ingest/       per-source normalization → canonical transaction CSVs
 rules/        Tier 1 implementations, one module per rule family
 analytics/    Tier 2 statistical checks (need baseline)
+tier3/        Tier 3 AI judgment layer (context packet → Claude review → severity/FP/next step)
 bank/         Tier 4: statement extraction, 3-way match, check image reading
 reporting/    exceptions workbook generator
 supabase/     financial_forensics schema migrations

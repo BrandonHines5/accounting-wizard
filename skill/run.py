@@ -1,12 +1,13 @@
-"""Weekly Tier 1 run: ingest export drops → rule battery → exceptions workbook.
+"""Weekly run: ingest export drops → Tier 1 rules → Tier 3 AI review → workbook.
 
 Usage:
     python -m skill.run [--data-dir data] [--output output/exceptions.xlsx]
-                        [--entity <id> ...]
+                        [--entity <id> ...] [--tier3 auto|on|off|heuristic]
 """
 from __future__ import annotations
 
 import argparse
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,24 @@ from ingest.normalize import ingest_data_dir, load_mappings
 from reporting.workbook import write_workbook
 import rules  # noqa: F401  — registers all rule modules
 from rules.engine import RunContext, run_all
+from tier3 import HeuristicJudge, apply_tier3, build_packets
+
+
+def _make_judge(mode: str, model: str | None):
+    """Resolve --tier3 mode to a judge, or None to skip Tier 3.
+
+    auto: Claude judge if ANTHROPIC_API_KEY is set, else skip (no degraded run).
+    on: Claude judge, required.  heuristic: deterministic offline judge.  off: skip.
+    """
+    if mode == "off":
+        return None
+    if mode == "heuristic":
+        return HeuristicJudge()
+    if mode == "auto" and not os.environ.get("ANTHROPIC_API_KEY"):
+        print("  Tier 3 skipped (no ANTHROPIC_API_KEY; use --tier3 heuristic for offline triage).")
+        return None
+    from tier3.anthropic_judge import MODEL, AnthropicJudge
+    return AnthropicJudge(model=model or MODEL)
 
 
 def main() -> None:
@@ -30,6 +49,12 @@ def main() -> None:
                              "Weekly runs should scope to the recent window.")
     parser.add_argument("--until", default=None,
                         help="Only analyze transactions on/before this date (YYYY-MM-DD)")
+    parser.add_argument("--tier3", choices=["auto", "on", "off", "heuristic"],
+                        default="auto",
+                        help="AI judgment layer: auto (Claude if ANTHROPIC_API_KEY set, "
+                             "else skip), on (require Claude), heuristic (offline), off.")
+    parser.add_argument("--tier3-model", default=None,
+                        help="Override the Claude model id for Tier 3.")
     args = parser.parse_args()
 
     registry = EntityRegistry.load()
@@ -67,6 +92,13 @@ def main() -> None:
                      registry=registry, config=config)
     findings = run_all(ctx)
     print(f"  {len(findings)} findings")
+
+    judge = _make_judge(args.tier3, args.tier3_model)
+    if judge is not None and findings:
+        print(f"  Tier 3 review ({type(judge).__name__}) over {len(findings)} findings …")
+        entities_by_id = {e.id: e for e in registry}
+        packets = build_packets(findings, ctx)
+        findings = apply_tier3(findings, packets, judge, entities_by_id)
 
     output = args.output or str(
         REPO_ROOT / "output" / f"exceptions_{datetime.now():%Y%m%d_%H%M}.xlsx")
