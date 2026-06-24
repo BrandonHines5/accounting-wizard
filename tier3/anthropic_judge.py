@@ -66,6 +66,8 @@ OUTPUT_SCHEMA = {
 
 
 class AnthropicJudge(Judge):
+    """Tier 3 judge backed by a Claude model, one structured call per finding."""
+
     def __init__(self, client=None, model: str = MODEL, max_tokens: int = 1500):
         self.model = model
         self.max_tokens = max_tokens
@@ -73,12 +75,14 @@ class AnthropicJudge(Judge):
 
     @property
     def client(self):
+        """The Anthropic client, constructed on first use (optional dependency)."""
         if self._client is None:
             import anthropic  # lazy: optional dependency
             self._client = anthropic.Anthropic()
         return self._client
 
     def assess(self, packet: JudgmentPacket) -> Tier3Assessment:
+        """Send the packet to Claude and parse the structured assessment back."""
         payload = json.dumps(packet.to_prompt_dict(), default=str, indent=2)
         response = self.client.messages.create(
             model=self.model,
@@ -95,6 +99,7 @@ class AnthropicJudge(Judge):
 
 
 def _parse(response, fallback: Severity) -> Tier3Assessment:
+    """Map a structured-output response into a Tier3Assessment."""
     text = next((b.text for b in response.content if getattr(b, "type", None) == "text"), "")
     data = json.loads(text)
     return Tier3Assessment(

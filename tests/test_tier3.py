@@ -11,8 +11,10 @@ from tier3.anthropic_judge import AnthropicJudge
 from tier3.judge import Tier3Assessment, apply_assessment
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def findings(ctx):
+    # Function-scoped: apply_tier3 mutates Finding objects in place, so each test
+    # gets its own fresh battery output rather than sharing (and leaking) state.
     return run_all(ctx)
 
 

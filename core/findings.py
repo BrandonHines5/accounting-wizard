@@ -44,6 +44,7 @@ class Finding:
     original_severity: Severity | None = None  # set only when Tier 3 changed severity
 
     def to_row(self) -> dict:
+        """Flatten the finding (plus any Tier 3 fields) into a workbook row."""
         row = {
             "rule_id": self.rule_id,
             "severity": str(self.severity),

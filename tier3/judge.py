@@ -24,6 +24,8 @@ _VALID_ACTIONS = {"clear", "verify", "escalate"}
 
 @dataclass
 class Tier3Assessment:
+    """One judge's verdict on a finding, before it is folded back in."""
+
     assessment: str                          # plain-English, 2–4 sentences
     severity: Severity                       # confirmed or adjusted
     severity_reason: str = ""                # required if severity differs from input
@@ -37,6 +39,7 @@ class Judge:
     """Base class. Subclasses implement `assess(packet) -> Tier3Assessment`."""
 
     def assess(self, packet: JudgmentPacket) -> Tier3Assessment:  # pragma: no cover
+        """Review one finding's packet and return an assessment."""
         raise NotImplementedError
 
     def assess_all(self, packets: list[JudgmentPacket]) -> list[Tier3Assessment]:
@@ -53,6 +56,7 @@ class Judge:
 
 
 def _failed_assessment(packet: JudgmentPacket, exc: Exception) -> Tier3Assessment:
+    """Conservative stand-in when a judge errors: keep severity, flag for review."""
     sev = packet.finding.severity
     return Tier3Assessment(
         assessment=("Tier 3 review unavailable for this finding "
@@ -76,6 +80,7 @@ class HeuristicJudge(Judge):
     judgment the deterministic rules don't support."""
 
     def assess(self, packet: JudgmentPacket) -> Tier3Assessment:
+        """Confirm severity and derive a coarse false-positive prior from context."""
         finding = packet.finding
         established = any(h.get("txn_count_in_entity", 0) >= 5
                           for h in packet.vendor_history)
@@ -102,6 +107,7 @@ class HeuristicJudge(Judge):
 
 
 def _clamp(p: float) -> float:
+    """Clamp a probability to [0.0, 1.0]; non-numeric input reads as 0.0."""
     try:
         return max(0.0, min(1.0, float(p)))
     except (TypeError, ValueError):
@@ -109,6 +115,7 @@ def _clamp(p: float) -> float:
 
 
 def coerce_severity(value, fallback: Severity) -> Severity:
+    """Map a severity name (or Severity) to the enum, falling back on garbage."""
     if isinstance(value, Severity):
         return value
     return _SEVERITY_BY_NAME.get(str(value).strip().upper(), fallback)

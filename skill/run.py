@@ -35,7 +35,16 @@ def _make_judge(mode: str, model: str | None):
         print("  Tier 3 skipped (no ANTHROPIC_API_KEY; use --tier3 heuristic for offline triage).")
         return None
     from tier3.anthropic_judge import MODEL, AnthropicJudge
-    return AnthropicJudge(model=model or MODEL)
+    judge = AnthropicJudge(model=model or MODEL)
+    if mode == "on":
+        # Fail fast at startup rather than deep into the run: force the client so
+        # a missing SDK or unresolved credentials errors before ingest/rules.
+        try:
+            _ = judge.client
+        except Exception as exc:  # noqa: BLE001 — surface a clear startup error
+            raise SystemExit(
+                f"--tier3 on requires the Anthropic SDK and credentials: {exc}")
+    return judge
 
 
 def main() -> None:
