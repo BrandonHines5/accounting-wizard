@@ -33,6 +33,11 @@ defaults:
   # T1-30: credit memos / write-offs above this are listed for review
   credit_memo_threshold: 250
 
+  # Tier 4 bank reconciliation (three-way match)
+  bank_amount_tolerance: 0.01      # cleared vs recorded amount must agree within this
+  bank_date_tolerance_days: 5      # non-check match: bank date vs book date window
+  clearing_gap_days: 30            # recorded→cleared gap beyond this is flagged
+
 # Account-name pattern that identifies inter-company GL accounts, e.g.
 # "Due from Beta", "1920 · Loan to 13525WM, LLC". Group 1 = kind (due|loan),
 # group 2 = direction (to|from), group 3 = counterparty name resolved against
