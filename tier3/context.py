@@ -138,6 +138,7 @@ def _prior_for(finding: Finding, prior: pd.DataFrame | None) -> list[dict]:
         if set(row_entities) & set(finding.entity_ids):
             out.append({
                 "disposition": row.get("disposition"),
+                "reason": row.get("disposition_note"),  # the human's stated "why"
                 "question": row.get("question"),
                 "dispositioned_at": _jsonable(row.get("dispositioned_at")),
             })

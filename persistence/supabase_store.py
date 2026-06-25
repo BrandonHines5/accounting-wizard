@@ -24,8 +24,8 @@ from persistence.findings_store import FindingsStore
 DEFAULT_SCHEMA = "financial_forensics"
 # Read back everything save() writes, so persistence-backed Tier 3 sees its own
 # prior review context (transaction_refs + ai_assessment) on the next run.
-_SELECT = ("fingerprint,rule_id,severity,entity_ids,disposition,details,"
-           "question,transaction_refs,ai_assessment")
+_SELECT = ("fingerprint,rule_id,severity,entity_ids,disposition,disposition_note,"
+           "details,question,transaction_refs,ai_assessment")
 
 # Hard rule (CLAUDE.md): never persist check/statement images or raw bank account
 # numbers — only reads, SharePoint path references, and hashed fingerprints. This
