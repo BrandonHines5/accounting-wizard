@@ -37,6 +37,10 @@ data/*/*
 # env-secret names; keep it local. The committed template is bank_accounts.example.yaml.
 config/bank_accounts.yaml
 
+# SharePoint pull config — references real folder paths; keep it local.
+# The committed template is sharepoint.example.yaml.
+config/sharepoint.yaml
+
 # Python
 __pycache__/
 *.pyc

@@ -1,0 +1,26 @@
+# Pull weekly QB exports straight from SharePoint via Microsoft Graph instead of
+# hand-uploading. Copy to config/sharepoint.yaml (gitignored) and fill in each
+# entity's folder, then run with `--pull-sharepoint on`.
+#
+# Auth is app-only (same mechanism as the Tier 4 check-image source). Set these
+# secrets / env vars before running:
+#   GRAPH_TENANT_ID       Entra (Azure AD) directory (tenant) ID
+#   GRAPH_CLIENT_ID       app registration's Application (client) ID
+#   GRAPH_CLIENT_SECRET   a client secret for that app registration
+#   GRAPH_DRIVE_ID        the document-library drive that holds the folders below
+# The app registration needs the APPLICATION permission Microsoft Graph >
+# Files.Read.All (or Sites.Read.All), admin-consented — app-only, no user sign-in.
+#
+# Each entity's `folder` is the path inside that drive. The run downloads the
+# recognized exports (qb__*.xlsx etc., per config/source_mappings.yaml) from the
+# folder into <data-dir>/<entity_id>/ (gitignored) before ingest; non-matching
+# files in the folder are ignored.
+
+# Optional: pin the drive here instead of using the GRAPH_DRIVE_ID env var.
+# drive_id: "b!Kv2tTTJjPEqgMXqpSKNxtdcDVhgjxyZLnYRkvv5zRe8i8N3TIksIRq2Eok36Cns0"
+
+entities:
+  hines-homes:
+    folder: "Personal Folders/Brandon/Claude Code/acct-wizard/HinesHomes"
+  # hope-filled:
+  #   folder: "Forensics/HopeFilled"
