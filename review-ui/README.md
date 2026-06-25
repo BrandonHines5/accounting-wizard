@@ -17,8 +17,27 @@ the Supabase URL + anon key are baked in as public-by-design defaults.)
   screen and sees nothing.
 - **Data access:** the app never touches the `financial_forensics` schema directly.
   It calls allowlist-gated `public` RPCs — `is_reviewer()`, `list_findings()` and
-  `set_finding_disposition(fingerprint, disposition)` — which run as
+  `set_finding_disposition(fingerprint, disposition, note)` — which run as
   `SECURITY DEFINER`. Setting a disposition feeds the run-over-run learning loop.
+
+## Feedback that teaches the tool
+Each open finding has a **reason box**. When you disposition it (Legit / Error
+corrected / Escalate) with a note, two things happen:
+
+1. The reason is stored (`disposition_note`) and flows into the **weekly run's Tier 3
+   AI** as prior context — so next week the model judges similar findings already
+   knowing why you cleared this one.
+2. The `feedback-review` **edge function** immediately **re-reviews every remaining
+   open finding** in light of your accumulated feedback. It may update a finding's
+   assessment, attach a **suggested disposition** (it never decides for you), or
+   lower a severity *with a stated reason* — it never silently drops a CRITICAL.
+   Cards it touches show an "updated from your feedback" tag.
+
+The re-review needs an Anthropic key. Set it once as an edge-function secret
+(Supabase → Edge Functions → Manage secrets, or
+`supabase secrets set ANTHROPIC_API_KEY=sk-...`; optional `ANTHROPIC_MODEL`).
+Until it's set, dispositions and reasons still save normally — only the live
+re-review is skipped (it no-ops cleanly).
 
 ## Develop locally
 ```bash

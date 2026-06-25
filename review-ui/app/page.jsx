@@ -9,6 +9,10 @@ const DISPOSITIONS = [
   { value: "error_corrected", label: "Error corrected" },
   { value: "escalated", label: "Escalate" },
 ];
+const DISP_LABEL = {
+  legit: "Legit", error_corrected: "Error corrected",
+  escalated: "Escalate", open: "Leave open",
+};
 // Internal detail keys not worth showing the reviewer.
 const HIDE_KEYS = new Set(["sample", "stat_key", "bank_ref", "severity_note"]);
 
@@ -75,6 +79,7 @@ function Dashboard({ supabase, session }) {
   const [findings, setFindings] = useState(null);
   const [error, setError] = useState(null);
   const [showResolved, setShowResolved] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
   const email = session.user?.email;
 
   const load = useCallback(async () => {
@@ -91,16 +96,28 @@ function Dashboard({ supabase, session }) {
 
   useEffect(() => { load(); }, [load]);
 
-  async function disposition(fp, value) {
+  async function disposition(fp, value, note) {
+    const trimmed = (note || "").trim();
     setFindings((prev) =>
       prev.map((f) => (f.fingerprint === fp ? { ...f, _busy: true } : f)));
     const { error } = await supabase.rpc("set_finding_disposition", {
-      p_fingerprint: fp, p_disposition: value,
+      p_fingerprint: fp, p_disposition: value, p_note: trimmed || null,
     });
     if (error) { setError(error.message); await load(); return; }
     setFindings((prev) =>
       prev.map((f) => (f.fingerprint === fp
-        ? { ...f, disposition: value, dispositioned_by: email, _busy: false } : f)));
+        ? { ...f, disposition: value, disposition_note: trimmed || null,
+            dispositioned_by: email, _busy: false } : f)));
+    // Feed the reason back to the AI: re-review every remaining open finding in
+    // light of the accumulated feedback, then reload to show any updates. The
+    // disposition is already saved, so a re-review failure is non-fatal.
+    if (trimmed) {
+      setReviewing(true);
+      try { await supabase.functions.invoke("feedback-review", { body: {} }); }
+      catch (_) { /* surfaced on reload if anything actually changed */ }
+      setReviewing(false);
+    }
+    await load();
   }
 
   const visible = (findings || []).filter((f) => showResolved || f.disposition === "open");
@@ -122,6 +139,7 @@ function Dashboard({ supabase, session }) {
       </header>
 
       {error && <div className="note err">{error}</div>}
+      {reviewing && <div className="note ok">Re-reviewing the open findings with your feedback…</div>}
       {authorized === undefined && <div className="muted">Checking access…</div>}
 
       {authorized === false && (
@@ -173,6 +191,7 @@ function Dashboard({ supabase, session }) {
 }
 
 function FindingCard({ f, onDisposition }) {
+  const [note, setNote] = useState("");
   const details = f.details && typeof f.details === "object" ? f.details : {};
   const detailEntries = Object.entries(details).filter(
     ([k, v]) => !HIDE_KEYS.has(k) && v !== null && v !== "");
@@ -183,6 +202,9 @@ function FindingCard({ f, onDisposition }) {
         <span className={`badge sev-${f.severity}`}>{f.severity}</span>
         <span className="rule">{f.rule_id}</span>
         <span className="muted" style={{ fontSize: 12 }}>{(f.entity_ids || []).join(", ")}</span>
+        {!resolved && f.ai_updated_at && (
+          <span className="tag-updated">updated from your feedback</span>
+        )}
         <div className="spacer" />
         <span className={`disp ${f.disposition}`}>{f.disposition}</span>
       </div>
@@ -202,17 +224,33 @@ function FindingCard({ f, onDisposition }) {
         <div className="meta">txns: {f.transaction_refs.join(", ")}</div>
       )}
       {f.ai_assessment && <div className="ai">{f.ai_assessment}</div>}
+      {!resolved && f.suggested_disposition && (
+        <div className="suggest">
+          AI suggests: <b>{DISP_LABEL[f.suggested_disposition] || f.suggested_disposition}</b>
+        </div>
+      )}
+      {resolved && f.disposition_note && (
+        <div className="reason-shown">
+          <span className="muted">your reason:</span> {f.disposition_note}
+        </div>
+      )}
+
+      {!resolved && (
+        <textarea className="reason" rows={2} value={note} disabled={f._busy}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Why? (optional — the AI uses your reason to re-check the other open items)" />
+      )}
 
       <div className="actions">
         {DISPOSITIONS.map((d) => (
           <button key={d.value} disabled={f._busy || f.disposition === d.value}
-            onClick={() => onDisposition(f.fingerprint, d.value)}>
+            onClick={() => onDisposition(f.fingerprint, d.value, note)}>
             {d.label}
           </button>
         ))}
         {resolved && (
           <button className="link" disabled={f._busy}
-            onClick={() => onDisposition(f.fingerprint, "open")}>Reopen</button>
+            onClick={() => onDisposition(f.fingerprint, "open", "")}>Reopen</button>
         )}
         {f.dispositioned_by && (
           <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
