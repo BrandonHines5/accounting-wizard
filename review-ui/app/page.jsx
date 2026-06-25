@@ -27,7 +27,57 @@ export default function Page() {
   return <Dashboard supabase={supabase} session={session} />;
 }
 
+function MicrosoftMark() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 23 23" aria-hidden="true" style={{ flex: "0 0 auto" }}>
+      <rect x="1" y="1" width="10" height="10" fill="#F25022" />
+      <rect x="12" y="1" width="10" height="10" fill="#7FBA00" />
+      <rect x="1" y="12" width="10" height="10" fill="#00A4EF" />
+      <rect x="12" y="12" width="10" height="10" fill="#FFB900" />
+    </svg>
+  );
+}
+
 function Login({ supabase }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [showEmail, setShowEmail] = useState(false);
+
+  async function signInMicrosoft() {
+    setBusy(true); setMsg(null);
+    const redirectTo = typeof window !== "undefined" ? window.location.origin : undefined;
+    // Azure (Microsoft Entra) provider, same as our other sites. On success the
+    // browser redirects to Microsoft and only errors return here; the allowlist
+    // RPCs decide who can actually see findings once signed in.
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "azure",
+      options: { scopes: "openid profile email", redirectTo },
+    });
+    if (error) { setBusy(false); setMsg({ kind: "err", text: error.message }); }
+  }
+
+  return (
+    <div className="center">
+      <div className="login">
+        <h1>Forensics Review</h1>
+        <p>Sign in with your Hines Homes Microsoft account.</p>
+        <button className="primary btn-ms" disabled={busy} onClick={signInMicrosoft}>
+          <MicrosoftMark />
+          <span>{busy ? "Redirecting…" : "Continue with Microsoft"}</span>
+        </button>
+        {msg && <div className={`note ${msg.kind}`}>{msg.text}</div>}
+        <button className="link" style={{ marginTop: 16 }} onClick={() => setShowEmail((v) => !v)}>
+          {showEmail ? "Hide email sign-in" : "Use email instead"}
+        </button>
+        {showEmail && <EmailLogin supabase={supabase} />}
+      </div>
+    </div>
+  );
+}
+
+// Email magic-link / 6-digit-code fallback. Kept available so a reviewer is never
+// locked out before the Azure provider is configured, but Microsoft is the primary.
+function EmailLogin({ supabase }) {
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [sent, setSent] = useState(false);
@@ -39,9 +89,8 @@ function Login({ supabase }) {
     setBusy(true); setMsg(null);
     const redirect = typeof window !== "undefined" ? window.location.origin : undefined;
     // shouldCreateUser stays true: a reviewer's first sign-in has no auth.users
-    // row yet, so false would block every first login. Authorization (who can see
-    // findings) is enforced by the review_allowlist-gated RPCs, not by who can
-    // create a bare auth account.
+    // row yet. Authorization is enforced by the allowlist-gated RPCs, not by who
+    // can create a bare auth account.
     const { error } = await supabase.auth.signInWithOtp({
       email: email.trim().toLowerCase(),
       options: { emailRedirectTo: redirect, shouldCreateUser: true },
@@ -62,32 +111,29 @@ function Login({ supabase }) {
   }
 
   return (
-    <div className="center">
-      <div className="login">
-        <h1>Forensics Review</h1>
-        <p>Sign in with your work email to review findings.</p>
-        <form onSubmit={sendLink}>
-          <input type="email" required placeholder="you@hineshomes.com"
-            value={email} onChange={(e) => setEmail(e.target.value)} />
-          <button className="primary" disabled={busy} style={{ width: "100%" }}>
-            {busy ? "Sending…" : sent ? "Resend link / code" : "Send sign-in link"}
-          </button>
+    <div style={{ marginTop: 14, textAlign: "left" }}>
+      <form onSubmit={sendLink}>
+        <input type="email" required placeholder="you@hineshomes.com"
+          value={email} onChange={(e) => setEmail(e.target.value)} />
+        <button disabled={busy} style={{ width: "100%" }}>
+          {busy ? "Sending…" : sent ? "Resend link / code" : "Send sign-in link"}
+        </button>
+      </form>
+      {sent && (
+        <form onSubmit={verifyCode} style={{ marginTop: 14 }}>
+          <input type="text" inputMode="numeric" placeholder="6-digit code (optional)"
+            value={code} onChange={(e) => setCode(e.target.value)}
+            style={{ width: "100%" }} />
+          <button disabled={busy || !code} style={{ width: "100%" }}>Verify code</button>
         </form>
-        {sent && (
-          <form onSubmit={verifyCode} style={{ marginTop: 14 }}>
-            <input type="text" inputMode="numeric" placeholder="6-digit code (optional)"
-              value={code} onChange={(e) => setCode(e.target.value)}
-              style={{ width: "100%" }} />
-            <button disabled={busy || !code} style={{ width: "100%" }}>Verify code</button>
-          </form>
-        )}
-        {msg && <div className={`note ${msg.kind}`}>{msg.text}</div>}
-      </div>
+      )}
+      {msg && <div className={`note ${msg.kind}`}>{msg.text}</div>}
     </div>
   );
 }
 
 function Dashboard({ supabase, session }) {
+  const [authorized, setAuthorized] = useState(undefined); // undefined = checking
   const [findings, setFindings] = useState(null);
   const [error, setError] = useState(null);
   const [showResolved, setShowResolved] = useState(false);
@@ -95,6 +141,11 @@ function Dashboard({ supabase, session }) {
 
   const load = useCallback(async () => {
     setError(null);
+    // Gate first: the allowlist (currently the admin only) decides access.
+    const { data: ok, error: gateErr } = await supabase.rpc("is_reviewer");
+    if (gateErr) { setError(gateErr.message); setAuthorized(false); return; }
+    setAuthorized(!!ok);
+    if (!ok) return;
     const { data, error } = await supabase.rpc("list_findings");
     if (error) { setError(error.message); setFindings([]); }  // resolve the loading state on error
     else setFindings(data || []);
@@ -133,9 +184,20 @@ function Dashboard({ supabase, session }) {
       </header>
 
       {error && <div className="note err">{error}</div>}
-      {findings === null && <div className="muted">Loading findings…</div>}
+      {authorized === undefined && <div className="muted">Checking access…</div>}
 
-      {findings !== null && (
+      {authorized === false && (
+        <div className="card">
+          <div className="q">You're signed in as <b>{email}</b>, but this account isn't on
+            the reviewer allowlist.</div>
+          <div className="meta">Access is limited to authorized reviewers. Ask the admin to
+            add your address, then refresh.</div>
+        </div>
+      )}
+
+      {authorized && findings === null && <div className="muted">Loading findings…</div>}
+
+      {authorized && findings !== null && (
         <>
           <div className="summary">
             <div className="kpi"><b>{openCount}</b><span>open</span></div>
