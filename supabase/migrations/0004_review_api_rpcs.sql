@@ -14,8 +14,9 @@ create table if not exists public.review_allowlist (
 -- functions below (which run as the owner), never directly via the API.
 alter table public.review_allowlist enable row level security;
 
-insert into public.review_allowlist (email) values ('brandon@hineshomes.com')
-  on conflict (email) do nothing;
+-- Reviewers are provisioned per-environment by an admin, not seeded in the schema
+-- migration (so a real identity isn't baked into every environment / the repo):
+--   insert into public.review_allowlist (email) values ('someone@example.com');
 
 create or replace function public.is_reviewer()
 returns boolean language sql security definer set search_path = '' as $$

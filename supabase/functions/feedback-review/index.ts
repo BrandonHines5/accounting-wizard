@@ -4,16 +4,29 @@
 //
 // Guardrails (CLAUDE.md hard rules):
 //   - Never sets `disposition` (only `suggested_disposition`) — the human decides.
-//   - May lower severity only with a stated reason; never silently drops a CRITICAL.
+//   - Never mutates `severity`. Severity floors (vendor bank-detail = CRITICAL until
+//     callback-verified; nonprofit misallocation >= HIGH) are deterministic and owned
+//     by the offline Tier 3 / rules layer, which has the entity registry. This
+//     interactive nudge only updates the assessment + a suggested disposition, so it
+//     can never downgrade a finding past a floor. It may note a severity concern in
+//     ai_assessment, but the badge only changes through the governed pipeline.
 //   - Only updates OPEN findings, and only those the feedback genuinely bears on.
-//   - Degrades gracefully: with no ANTHROPIC_API_KEY set it no-ops (the reason is
-//     still saved by set_finding_disposition; only the AI re-review is skipped).
+//   - A missing ANTHROPIC_API_KEY is a misconfiguration: returns 503, not a silent
+//     no-op. The disposition + reason are already saved by set_finding_disposition
+//     before this runs, so only the AI re-review is affected.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const SCHEMA = "financial_forensics";
 const MODEL = Deno.env.get("ANTHROPIC_MODEL") || "claude-sonnet-4-6";
-const SEV_RANK: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, INFO: 3 };
+const TIMEOUT_MS = 60_000;
+
+// Defense-in-depth egress guard for the no-raw-bank-numbers hard rule: the RPC
+// redacts disposition_note at write time, but this function is the external egress
+// to Anthropic, so scrub long digit runs (incl. space/hyphen-separated) again here —
+// covering legacy rows or any out-of-band writes that bypassed the RPC.
+const redactDigits = (s: string | null) =>
+  s ? s.replace(/\d([ -]?\d){6,}/g, "[redacted]") : s;
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -39,21 +52,26 @@ Deno.serve(async (req) => {
     const { data: userData, error: userErr } = await ff.auth.getUser(token);
     const email = userData?.user?.email?.toLowerCase();
     if (userErr || !email) return json({ error: "unauthenticated" }, 401);
-    const { data: allow } = await pub
+    const { data: allow, error: allowErr } = await pub
       .from("review_allowlist").select("email").eq("email", email).maybeSingle();
+    if (allowErr) return json({ error: "allowlist_lookup_failed", detail: allowErr.message }, 500);
     if (!allow) return json({ error: "not authorized" }, 403);
 
     const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
-    if (!apiKey) return json({ updated: 0, skipped: "ANTHROPIC_API_KEY not set" });
+    // A missing key is a server misconfiguration, not a successful no-op — surface it.
+    if (!apiKey) return json({ error: "anthropic_api_key_not_configured" }, 503);
 
     // The human feedback corpus (dispositioned findings that carry a reason) and
-    // the still-open findings to re-review against it.
-    const { data: feedback } = await ff.from("findings")
+    // the still-open findings to re-review against it. Propagate query errors
+    // rather than masking a DB/permission failure as "nothing to do".
+    const { data: feedback, error: fbErr } = await ff.from("findings")
       .select("rule_id,severity,question,disposition,disposition_note,entity_ids")
       .neq("disposition", "open").not("disposition_note", "is", null);
-    const { data: open } = await ff.from("findings")
+    if (fbErr) return json({ error: "feedback_query_failed", detail: fbErr.message }, 500);
+    const { data: open, error: openErr } = await ff.from("findings")
       .select("fingerprint,rule_id,severity,question,details,entity_ids,ai_assessment")
       .eq("disposition", "open");
+    if (openErr) return json({ error: "open_query_failed", detail: openErr.message }, 500);
 
     if (!open?.length) return json({ updated: 0, open: 0 });
     if (!feedback?.length) return json({ updated: 0, note: "no reasoned feedback yet" });
@@ -65,7 +83,7 @@ Deno.serve(async (req) => {
       "Findings are verification questions, not accusations; errors outnumber fraud ~100:1.",
       "Rules you MUST follow:",
       "- You may SUGGEST a disposition (legit | error_corrected | escalated | open) but NEVER decide it; the human does.",
-      "- You may LOWER severity (e.g. CRITICAL→MEDIUM) only with an explicit reason in ai_assessment. Never silently drop a CRITICAL. Do not RAISE severity here.",
+      "- You do NOT set severity. If you believe a severity is wrong, say so in ai_assessment; the badge is governed elsewhere.",
       "- Only return a finding if the human feedback genuinely bears on it (same vendor, same rule pattern, same root cause). Leave unrelated findings out.",
       "Return ONLY the findings you are updating, via the update_findings tool.",
     ].join("\n");
@@ -90,7 +108,6 @@ Deno.serve(async (req) => {
                   type: "string",
                   enum: ["legit", "error_corrected", "escalated", "open"],
                 },
-                severity: { type: "string", enum: ["CRITICAL", "HIGH", "MEDIUM", "INFO"] },
               },
               required: ["fingerprint", "ai_assessment"],
             },
@@ -101,29 +118,45 @@ Deno.serve(async (req) => {
     };
 
     const payload = {
-      reviewer_feedback: feedback,
+      reviewer_feedback: feedback.map((f) => ({
+        ...f, disposition_note: redactDigits(f.disposition_note),
+      })),
       open_findings: open.map((f) => ({
         fingerprint: f.fingerprint, rule_id: f.rule_id, severity: f.severity,
         question: f.question, details: f.details, entity_ids: f.entity_ids,
       })),
     };
 
-    const resp = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 4096,
-        system,
-        tools: [tool],
-        tool_choice: { type: "tool", name: "update_findings" },
-        messages: [{ role: "user", content: JSON.stringify(payload) }],
-      }),
-    });
+    // Bound the upstream call so a slow Anthropic response can't hang the edge
+    // runtime until its own hard timeout.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    let resp: Response;
+    try {
+      resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: 4096,
+          system,
+          tools: [tool],
+          tool_choice: { type: "tool", name: "update_findings" },
+          messages: [{ role: "user", content: JSON.stringify(payload) }],
+        }),
+      });
+    } catch (e) {
+      const aborted = e instanceof DOMException && e.name === "AbortError";
+      return json({ error: aborted ? "anthropic_timeout" : "anthropic_unreachable",
+                    detail: String(e) }, 504);
+    } finally {
+      clearTimeout(timer);
+    }
     if (!resp.ok) {
       return json({ error: "anthropic_error", status: resp.status,
                     detail: (await resp.text()).slice(0, 500) }, 502);
@@ -135,23 +168,23 @@ Deno.serve(async (req) => {
     const openByFp = new Map(open.map((f) => [f.fingerprint, f]));
     const now = new Date().toISOString();
     let applied = 0;
+    const seen = new Set<string>();
+    const failures: { fingerprint: string; error: string }[] = [];
     for (const u of updates) {
-      const cur = openByFp.get(u.fingerprint);
-      if (!cur || !u.ai_assessment?.trim()) continue;       // only touch loaded open rows
-      const patch: Record<string, unknown> = {
+      const cur = openByFp.get(u?.fingerprint);
+      if (!cur || !u.ai_assessment?.trim() || seen.has(u.fingerprint)) continue;
+      seen.add(u.fingerprint);                               // dedupe repeated AI entries
+      const { data: updated, error } = await ff.from("findings").update({
         ai_assessment: u.ai_assessment,
         suggested_disposition: u.suggested_disposition ?? null,
         ai_updated_at: now,
-      };
-      // Severity may only move DOWN (rank increases), and only with a reason.
-      if (u.severity && SEV_RANK[u.severity] > (SEV_RANK[cur.severity] ?? 9)) {
-        patch.severity = u.severity;
-      }
-      const { error } = await ff.from("findings")
-        .update(patch).eq("fingerprint", u.fingerprint).eq("disposition", "open");
-      if (!error) applied++;
+      }).eq("fingerprint", u.fingerprint).eq("disposition", "open")
+        .select("fingerprint").maybeSingle();
+      if (error) failures.push({ fingerprint: u.fingerprint, error: error.message });
+      else if (updated) applied++;                           // count only rows actually updated
     }
-    return json({ updated: applied, considered: open.length });
+    return json({ updated: applied, considered: open.length,
+                  ...(failures.length ? { failures } : {}) });
   } catch (e) {
     return json({ error: String(e) }, 500);
   }

@@ -97,27 +97,35 @@ function Dashboard({ supabase, session }) {
   useEffect(() => { load(); }, [load]);
 
   async function disposition(fp, value, note) {
+    if (reviewing) return;  // serialize: one re-review at a time, no racing writes
     const trimmed = (note || "").trim();
     setFindings((prev) =>
       prev.map((f) => (f.fingerprint === fp ? { ...f, _busy: true } : f)));
     const { error } = await supabase.rpc("set_finding_disposition", {
       p_fingerprint: fp, p_disposition: value, p_note: trimmed || null,
     });
-    if (error) { setError(error.message); await load(); return; }
+    // load() clears the error banner, so set the message AFTER reloading.
+    if (error) { await load(); setError(error.message); return; }
     setFindings((prev) =>
       prev.map((f) => (f.fingerprint === fp
         ? { ...f, disposition: value, disposition_note: trimmed || null,
             dispositioned_by: email, _busy: false } : f)));
     // Feed the reason back to the AI: re-review every remaining open finding in
     // light of the accumulated feedback, then reload to show any updates. The
-    // disposition is already saved, so a re-review failure is non-fatal.
+    // disposition itself is already saved, so a re-review failure is non-fatal —
+    // but surface it (after the reload, which resets the banner) so a misconfig
+    // or timeout isn't silent.
+    let reviewErr = null;
     if (trimmed) {
       setReviewing(true);
-      try { await supabase.functions.invoke("feedback-review", { body: {} }); }
-      catch (_) { /* surfaced on reload if anything actually changed */ }
+      try {
+        const { error: e } = await supabase.functions.invoke("feedback-review", { body: {} });
+        reviewErr = e || null;
+      } catch (e) { reviewErr = e; }
       setReviewing(false);
     }
     await load();
+    if (reviewErr) setError(reviewErr.message || String(reviewErr));
   }
 
   const visible = (findings || []).filter((f) => showResolved || f.disposition === "open");
@@ -179,7 +187,8 @@ function Dashboard({ supabase, session }) {
             return (
               <section key={sev}>
                 {group.map((f) => (
-                  <FindingCard key={f.fingerprint} f={f} onDisposition={disposition} />
+                  <FindingCard key={f.fingerprint} f={f} onDisposition={disposition}
+                    locked={reviewing} />
                 ))}
               </section>
             );
@@ -190,8 +199,11 @@ function Dashboard({ supabase, session }) {
   );
 }
 
-function FindingCard({ f, onDisposition }) {
+function FindingCard({ f, onDisposition, locked }) {
   const [note, setNote] = useState("");
+  // Clear the reason whenever this finding leaves the open state, so reopening it
+  // (or reusing the fingerprint) never resurfaces stale text on the next action.
+  useEffect(() => { if (f.disposition !== "open") setNote(""); }, [f.disposition, f.fingerprint]);
   const details = f.details && typeof f.details === "object" ? f.details : {};
   const detailEntries = Object.entries(details).filter(
     ([k, v]) => !HIDE_KEYS.has(k) && v !== null && v !== "");
@@ -236,20 +248,20 @@ function FindingCard({ f, onDisposition }) {
       )}
 
       {!resolved && (
-        <textarea className="reason" rows={2} value={note} disabled={f._busy}
+        <textarea className="reason" rows={2} value={note} disabled={f._busy || locked}
           onChange={(e) => setNote(e.target.value)}
           placeholder="Why? (optional — the AI uses your reason to re-check the other open items)" />
       )}
 
       <div className="actions">
         {DISPOSITIONS.map((d) => (
-          <button key={d.value} disabled={f._busy || f.disposition === d.value}
+          <button key={d.value} disabled={f._busy || locked || f.disposition === d.value}
             onClick={() => onDisposition(f.fingerprint, d.value, note)}>
             {d.label}
           </button>
         ))}
         {resolved && (
-          <button className="link" disabled={f._busy}
+          <button className="link" disabled={f._busy || locked}
             onClick={() => onDisposition(f.fingerprint, "open", "")}>Reopen</button>
         )}
         {f.dispositioned_by && (
