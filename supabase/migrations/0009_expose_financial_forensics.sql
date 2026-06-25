@@ -14,6 +14,10 @@ grant all on all sequences in schema financial_forensics to service_role;
 alter default privileges in schema financial_forensics grant all on tables to service_role;
 alter default privileges in schema financial_forensics grant all on sequences to service_role;
 
--- Add the schema to the Data API's exposed list and reload PostgREST.
+-- Add the schema to the Data API's exposed list, then reload PostgREST's config
+-- (picks up the new exposed-schemas list) AND its schema cache (discovers the
+-- newly-exposed schema's tables — without this, requests get PGRST205
+-- "Could not find the table … in the schema cache").
 alter role authenticator set pgrst.db_schemas = 'public, graphql_public, financial_forensics';
 notify pgrst, 'reload config';
+notify pgrst, 'reload schema';
