@@ -105,6 +105,8 @@ def _run_tier4(args, registry, config, transactions, known_ids: set[str]) -> lis
     findings = reconcile_all(transactions, bank, registry, config)
     print(f"  {len(findings)} reconciliation findings")
     findings += _run_check_images(args, registry, config, bank, transactions, accounts)
+    if args.store == "supabase":
+        _persist_bank(bank, args.supabase_schema)
     return findings
 
 
@@ -174,15 +176,23 @@ def _run_check_images(args, registry, config, bank, transactions, accounts) -> l
         if not mask.any():
             continue
         source = make_source(account)
-        subset = source.attach(bank[mask])
-        _, account_findings = verify_check_images(
-            subset, transactions, reader, registry, config,
+        enriched, account_findings = verify_check_images(
+            source.attach(bank[mask]), transactions, reader, registry, config,
             fetch_front=source.read_front, fetch_back=source.read_back,
             media_type=source.media_type)
+        # Write the reads back into the shared bank frame so persistence keeps them.
+        read_cols = ["image_ref", "payee_read", "amount_read", "read_confidence"]
+        bank.loc[enriched.index, read_cols] = enriched[read_cols]
         findings += account_findings
     if findings:
         print(f"  {len(findings)} check-image findings")
     return findings
+
+
+def _persist_bank(bank, schema) -> None:
+    from persistence.bank_store import BankTransactionsStore
+    count = BankTransactionsStore.from_env(schema).save(bank)
+    print(f"  Tier 4: persisted {count} bank lines to Supabase")
 
 
 def main() -> None:

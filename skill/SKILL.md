@@ -46,7 +46,9 @@ python -m skill.run --data-dir data --output output/exceptions_$(date +%Y%m%d).x
 findings, suppresses exact re-occurrences a human already cleared, escalates
 patterns that recur after a clear, then saves new findings as `open`. Suppressed
 items are listed on the workbook's **Dispositioned** sheet, never silently
-dropped.
+dropped. With `--store supabase`, Tier 4 also persists the extracted, reconciled,
+and vision-read bank lines to `bank_transactions` (idempotent on a per-line key) —
+the audit trail of what cleared plus the check reads behind the review queue.
 
 **Tier 4 bank reconciliation** (`--bank-dir`, `--bank-accounts`): runs only when
 `config/bank_accounts.yaml` exists (copy `config/bank_accounts.example.yaml`) and

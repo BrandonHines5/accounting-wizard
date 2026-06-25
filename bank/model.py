@@ -10,6 +10,8 @@ Amount sign convention: negative = money out (disbursement), positive = money in
 """
 from __future__ import annotations
 
+import hashlib
+
 import pandas as pd
 
 BANK_COLUMNS = [
@@ -47,3 +49,28 @@ def validate_bank_transactions(df: pd.DataFrame, known_entity_ids: set[str]) -> 
         raise ValueError(
             f"Bank transactions reference entity ids not in the registry: {sorted(unknown)}")
     return df[BANK_COLUMNS]
+
+
+def _ck(value) -> str:
+    if value is None or value is pd.NA or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def line_fingerprint(row) -> str:
+    """Stable per-line key for idempotent persistence: same statement line → same
+    hash, so a re-extracted line upserts instead of duplicating. Uses the hashed
+    account_fingerprint (never a raw number), date, signed amount, check no., and
+    description — the fields that identify a register line within an account."""
+    date = row.get("date")
+    parts = [
+        str(row.get("entity_id") or ""),
+        str(row.get("account_fingerprint") or ""),
+        str(pd.to_datetime(date).date()) if pd.notna(date) else "",
+        f"{float(row['amount']):.2f}" if pd.notna(row.get("amount")) else "",
+        _ck(row.get("check_no")),
+        str(row.get("description") or ""),
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()

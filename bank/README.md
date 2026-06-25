@@ -56,5 +56,13 @@ Reconciliation is per entity for now; multi-account splitting by
 `account_fingerprint` is keyed on the per-account fingerprint. Findings flow
 through the shared `Finding`/severity/workbook machinery.
 
+Persistence: with `--store supabase`, the extracted + reconciled + vision-read
+bank lines are written to `financial_forensics.bank_transactions` via
+`persistence/bank_store.py`, upserted on a `line_fingerprint` (migration 0003) so
+re-running a statement updates reads/matches in place instead of duplicating. The
+store emits a fixed column whitelist — no raw account number (hashed
+`account_fingerprint` only) and no image bytes (only `image_ref` paths + reads)
+can ever reach Supabase.
+
 Image handling: images stay in SharePoint (restricted); Supabase stores reads +
 path reference only. Bank account numbers are hashed fingerprints, never raw.
