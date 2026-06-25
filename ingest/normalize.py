@@ -211,6 +211,31 @@ def dedupe_transactions(df: pd.DataFrame) -> pd.DataFrame:
     return out.drop(columns=["_priority"]).sort_index()
 
 
+def ensure_unique_source_ids(df: pd.DataFrame) -> pd.DataFrame:
+    """Guarantee one row per (entity_id, source_system, source_id).
+
+    A real QB Trans # is shared by every split line of a single transaction (e.g.
+    a credit memo posted across several GL accounts), so a report that maps
+    source_id to Trans # (currently only credit_memos) emits duplicate keys. The
+    transactions table's `unique (entity_id, source_system, source_id)` constraint
+    — and the chunked upsert that loads it — reject duplicate keys *within one
+    command* ("ON CONFLICT DO UPDATE command cannot affect row a second time").
+    Suffix the 2nd+ occurrence of each key (#2, #3, …) so every split line
+    persists as its own row, matching the line-level granularity the
+    synthesized-id reports (Vendor Transaction Detail, GL) already produce.
+    Synthesized ids are unique by construction, so they are left untouched.
+    """
+    if df.empty:
+        return df
+    rank = df.groupby(["entity_id", "source_system", "source_id"]).cumcount()
+    if not (rank > 0).any():
+        return df
+    df = df.copy()
+    suffixed = df["source_id"].astype(str) + "#" + (rank + 1).astype(str)
+    df["source_id"] = df["source_id"].mask(rank > 0, suffixed)
+    return df
+
+
 def ingest_data_dir(
     data_dir: Path,
     registry: EntityRegistry,
@@ -263,6 +288,7 @@ def ingest_data_dir(
                 txn_frames.append(frame)
     transactions = (dedupe_transactions(pd.concat(txn_frames, ignore_index=True))
                     if txn_frames else pd.DataFrame(columns=TRANSACTION_COLUMNS))
+    transactions = ensure_unique_source_ids(transactions)
     vendors = (pd.concat(vendor_frames, ignore_index=True).drop_duplicates(
                    subset=["entity_id", "vendor_name"])
                if vendor_frames else pd.DataFrame(columns=VENDOR_COLUMNS))
