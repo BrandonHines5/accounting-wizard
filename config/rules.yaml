@@ -27,6 +27,11 @@ defaults:
   wrong_entity_established_min: 5
   wrong_entity_stray_max: 2
 
+  # T1-20: vendor/cost-code mismatch — a vendor's "home" cost code is one used at
+  # least established_min times; a code used at most stray_max times is a stray.
+  vendor_costcode_established_min: 4
+  vendor_costcode_stray_max: 1
+
   # T1-24: inter-company balances must agree within this tolerance
   intercompany_tolerance: 0.01
 

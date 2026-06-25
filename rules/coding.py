@@ -1,8 +1,8 @@
 """Coding & job-cost rules (T1-20 … T1-24).
 
-Implemented: T1-21 (journal cost transfers), T1-23 (wrong entity, heuristic),
-T1-24 (inter-company imbalance across every pair of registry entities).
-T1-20/22 need baseline / schedule data — declared pending.
+Implemented: T1-20 (vendor/cost-code mismatch), T1-21 (journal cost transfers),
+T1-23 (wrong entity, heuristic), T1-24 (inter-company imbalance across every pair
+of registry entities). T1-22 needs schedule data — declared pending.
 
 These are the rules the entity registry exists for: they iterate every active
 entity and never reference an entity by name.
@@ -150,6 +150,37 @@ def intercompany_imbalance(ctx: RunContext):
                 )
 
 
-pending_rule("T1-20", "Vendor/cost-code mismatch", requires="QB + Supabase baseline (Phase 2)")
+@rule("T1-20", "Vendor/cost-code mismatch", requires="QB transactions (vendor + cost_code)")
+def vendor_costcode_mismatch(ctx: RunContext):
+    """A vendor billed to a cost code outside its established pattern — the vendor
+    has a home code (used >= established_min times) and a rare stray on another."""
+    established_min = int(ctx.config.param("vendor_costcode_established_min"))
+    stray_max = int(ctx.config.param("vendor_costcode_stray_max"))
+    for entity_id in ctx.active_entity_ids:
+        df = ctx.entity_transactions(entity_id)
+        df = df[df["vendor_name"].notna() & df["cost_code"].notna()]
+        for vendor, grp in df.groupby("vendor_name"):
+            counts = grp["cost_code"].astype(str).value_counts()
+            home_codes = counts[counts >= established_min].index.tolist()
+            stray_codes = counts[counts <= stray_max].index.tolist()
+            if not home_codes or not stray_codes:
+                continue
+            home = home_codes[0]
+            for stray in stray_codes:
+                stray_txns = grp[grp["cost_code"].astype(str) == stray]
+                yield Finding(
+                    rule_id="T1-20",
+                    severity=Severity.MEDIUM,
+                    entity_ids=[entity_id],
+                    question=(
+                        f"{vendor} normally bills cost code {home} "
+                        f"({int(counts[home])} times) but has {int(counts[stray])} "
+                        f"posting(s) on {stray}. Is the {stray} coding correct?"
+                    ),
+                    details={"vendor": vendor, "home_cost_code": home, "stray_cost_code": stray},
+                    transactions=list(stray_txns["source_id"].astype(str)),
+                )
+
+
 pending_rule("T1-22", "Cost on closed/late-stage job",
              requires="QB + BT/project-manager schedule export")

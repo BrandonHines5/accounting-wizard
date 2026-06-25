@@ -24,6 +24,7 @@ class RunContext:
     registry: EntityRegistry
     config: RulesConfig
     baselines: pd.DataFrame | None = None   # prior baselines (Tier 2); None until established
+    prior_vendors: pd.DataFrame | None = None   # last-synced vendor master (T1-14 diffing)
 
     @property
     def active_entity_ids(self) -> list[str]:

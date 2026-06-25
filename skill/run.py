@@ -292,15 +292,20 @@ def main() -> None:
     # references entities (transactions, vendors, bank lines) is persisted, and
     # load any prior Tier 2 baselines so T2-05 has something to compare against.
     baselines = None
+    prior_vendors = None
     if args.store == "supabase":
-        _sync_sources(args.supabase_schema, registry, transactions, vendors)
         from persistence.baseline_store import BaselineStore
+        from persistence.source_store import VendorStore
+        # Read the prior vendor master BEFORE re-syncing (T1-14 diffs against it).
+        prior_vendors = VendorStore.from_env(args.supabase_schema).load()
+        _sync_sources(args.supabase_schema, registry, transactions, vendors)
         baselines = BaselineStore.from_env(args.supabase_schema).load()
         if len(baselines):
             print(f"  Loaded {len(baselines)} Tier 2 baselines")
 
     ctx = RunContext(transactions=transactions, vendors=vendors,
-                     registry=registry, config=config, baselines=baselines)
+                     registry=registry, config=config, baselines=baselines,
+                     prior_vendors=prior_vendors)
     findings = run_all(ctx)
     print(f"  {len(findings)} Tier 1–2 rule findings")
 

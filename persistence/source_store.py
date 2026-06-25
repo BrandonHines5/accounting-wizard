@@ -81,6 +81,13 @@ class VendorStore:
                 for _, row in vendors.iterrows()]
         return _chunked_upsert(self._table, rows, "entity_id,vendor_id")
 
+    def load(self) -> pd.DataFrame:
+        """The last-synced vendor master — feeds T1-14 (bank-detail change diffing).
+        Read BEFORE the run re-syncs, so it reflects the prior state."""
+        cols = "entity_id,vendor_id,vendor_name,bank_fingerprint"
+        rows = self._table.select(cols).execute().data or []
+        return pd.DataFrame(rows)
+
 
 class TransactionStore:
     """Persist canonical transactions into the `transactions` table."""
