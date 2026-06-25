@@ -32,6 +32,37 @@ from rules.engine import RunContext, run_all
 from tier3 import HeuristicJudge, apply_tier3, build_packets
 
 
+def _maybe_pull_sharepoint(args, registry, mappings) -> None:
+    """Download configured SharePoint folders into the data dir before ingest.
+
+    Skips cleanly when not set up (no config or missing GRAPH_* env) unless
+    `--pull-sharepoint on` demanded it, so a local run needs no extra flags."""
+    if args.pull_sharepoint == "off":
+        return
+    from ingest.sharepoint import GRAPH_ENV, load_sharepoint_config, pull_all
+
+    cfg = load_sharepoint_config(args.sharepoint_config)
+    if cfg is None:
+        if args.pull_sharepoint == "on":
+            raise SystemExit(f"--pull-sharepoint on needs {args.sharepoint_config} "
+                             "(copy config/sharepoint.example.yaml)")
+        return
+    has_drive = bool(cfg.get("drive_id") or os.environ.get("GRAPH_DRIVE_ID"))
+    missing = [v for v in GRAPH_ENV if v not in os.environ]
+    if missing or not has_drive:
+        need = missing + ([] if has_drive else ["GRAPH_DRIVE_ID"])
+        if args.pull_sharepoint == "on":
+            raise SystemExit(f"--pull-sharepoint on needs env: {', '.join(need)}")
+        print(f"  SharePoint pull skipped (missing {', '.join(need)}).")
+        return
+    print("Pulling exports from SharePoint …")
+    pulled = pull_all(cfg, args.data_dir, registry, mappings,
+                      on_file=lambda n, sz: print(f"  ↓ {n} ({sz // 1024} KB)"))
+    total = sum(len(v) for v in pulled.values())
+    print(f"  Pulled {total} file(s) across {len(pulled)} "
+          f"entit{'y' if len(pulled) == 1 else 'ies'}")
+
+
 def _make_store(mode: str, schema: str | None):
     """Resolve --store mode to a FindingsStore, or None to disable persistence."""
     if mode == "none":
@@ -212,6 +243,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Tier 1 forensics battery.")
     parser.add_argument("--data-dir", default=str(REPO_ROOT / "data"))
     parser.add_argument("--output", default=None)
+    parser.add_argument("--pull-sharepoint", choices=["auto", "on", "off"], default="off",
+                        help="Pull weekly exports from SharePoint via Microsoft Graph "
+                             "into the data dir before ingest (needs "
+                             "config/sharepoint.yaml + GRAPH_* env). auto: pull if both "
+                             "are present, else skip; on: require them.")
+    parser.add_argument("--sharepoint-config",
+                        default=str(REPO_ROOT / "config" / "sharepoint.yaml"),
+                        help="SharePoint pull config (see config/sharepoint.example.yaml).")
     parser.add_argument("--entity", action="append", default=None,
                         help="Limit to specific entity id(s); default = all active")
     parser.add_argument("--since", default=None,
@@ -262,12 +301,14 @@ def main() -> None:
     known_ids = {e.id for e in registry}
 
     data_dir = Path(args.data_dir)
+    mappings = load_mappings()
+    _maybe_pull_sharepoint(args, registry, mappings)
     if not data_dir.exists():
         raise SystemExit(f"Data dir {data_dir} not found — drop weekly exports there first "
                          "(see skill/SKILL.md).")
 
     print(f"Ingesting exports from {data_dir} …")
-    transactions, vendors, cost_lines = ingest_data_dir(data_dir, registry, load_mappings())
+    transactions, vendors, cost_lines = ingest_data_dir(data_dir, registry, mappings)
     transactions = validate_transactions(transactions, known_ids)
     vendors = validate_vendors(vendors, known_ids)
     cost_lines = validate_cost_lines(cost_lines, known_ids)

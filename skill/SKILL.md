@@ -29,6 +29,14 @@ Exports dropped in `data/<entity_id>/`, named `<source>__<report>.(xlsx|csv)`
 per `config/source_mappings.yaml` (e.g. `data/hines-homes/qb__check_detail.xlsx`).
 See the weekly export checklist in `FORENSICS_AGENT_KICKOFF.md` §3.
 
+**Optional — pull straight from SharePoint** (`--pull-sharepoint on`): instead of
+hand-dropping files, each entity's exports are downloaded from a SharePoint folder
+via Microsoft Graph into `data/<entity_id>/` before ingest. App-only auth
+(`GRAPH_TENANT_ID/CLIENT_ID/CLIENT_SECRET`, `GRAPH_DRIVE_ID`; the app registration
+needs `Files.Read.All`, admin-consented) — copy `config/sharepoint.example.yaml`
+to `config/sharepoint.yaml` and map each entity to its folder. `auto` pulls when
+both the config and creds are present, else skips.
+
 ## Run
 
 ```bash
