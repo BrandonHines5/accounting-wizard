@@ -118,23 +118,52 @@ def _make_check_reader(mode: str, model: str | None):
     return AnthropicCheckReader(model=model or MODEL)
 
 
+def _check_image_source_factory(args):
+    """Return a callable `account -> CheckImageSource`, or None to skip image reads
+    (missing local dir, or graph selected without GRAPH_* credentials)."""
+    def cfg(account):
+        return account.check_images
+
+    if args.check_image_source == "graph":
+        required = ("GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET",
+                    "GRAPH_DRIVE_ID")
+        if any(var not in os.environ for var in required):
+            print("  Check-image reads skipped (graph source needs GRAPH_* env vars).")
+            return None
+        from bank.check_image_source import GraphCheckImages
+        return lambda account: GraphCheckImages.from_env(
+            folder=cfg(account).get("dir", ""),
+            front_pattern=cfg(account).get("front", "{check_no}_front.jpg"),
+            back_pattern=cfg(account).get("back", "{check_no}_back.jpg"),
+            label=account.label)
+
+    image_dir = (Path(args.check_image_dir) if args.check_image_dir
+                 else Path(args.data_dir) / "check-images")
+    if not image_dir.exists():
+        print(f"  Check-image reads skipped (no image dir at {image_dir}).")
+        return None
+    from bank.check_image_source import LocalCheckImages
+    return lambda account: LocalCheckImages(
+        image_dir / (cfg(account).get("dir") or ""),
+        front_pattern=cfg(account).get("front", "{check_no}_front.jpg"),
+        back_pattern=cfg(account).get("back", "{check_no}_back.jpg"),
+        label=account.label)
+
+
 def _run_check_images(args, registry, config, bank, transactions, accounts) -> list:
     """Read cancelled-check images for accounts that configure them and emit
     T4-03/04/05 findings. Skips cleanly when reads are off, no account configures
-    images, no reader is available, or the image directory is absent."""
+    images, no reader is available, or the image source isn't reachable."""
     accts = [a for a in accounts if a.check_images]
     if not accts:
         return []
     reader = _make_check_reader(args.check_images, args.check_image_model)
     if reader is None:
         return []
-    image_dir = (Path(args.check_image_dir) if args.check_image_dir
-                 else Path(args.data_dir) / "check-images")
-    if not image_dir.exists():
-        print(f"  Check-image reads skipped (no image dir at {image_dir}).")
+    make_source = _check_image_source_factory(args)
+    if make_source is None:
         return []
 
-    from bank.check_image_source import LocalCheckImages
     from bank.check_images import verify_check_images
     from core.fingerprint import account_fingerprint
 
@@ -143,12 +172,7 @@ def _run_check_images(args, registry, config, bank, transactions, accounts) -> l
         mask = bank["account_fingerprint"] == account_fingerprint(account.account_number())
         if not mask.any():
             continue
-        cfg = account.check_images
-        source = LocalCheckImages(
-            image_dir / (cfg.get("dir") or ""),
-            front_pattern=cfg.get("front", "{check_no}_front.jpg"),
-            back_pattern=cfg.get("back", "{check_no}_back.jpg"),
-            label=account.label)
+        source = make_source(account)
         subset = source.attach(bank[mask])
         _, account_findings = verify_check_images(
             subset, transactions, reader, registry, config,
@@ -194,6 +218,10 @@ def main() -> None:
                         help="Tier 4 cancelled-check vision reads (T4-03/04/05): auto "
                              "(Claude if ANTHROPIC_API_KEY set + images present, else skip), "
                              "on, off.")
+    parser.add_argument("--check-image-source", choices=["local", "graph"], default="local",
+                        help="Where check images come from: local (synced under "
+                             "--check-image-dir) or graph (SharePoint via Microsoft "
+                             "Graph; needs GRAPH_* env vars).")
     parser.add_argument("--check-image-dir", default=None,
                         help="Directory of locally-synced cancelled-check images "
                              "(default: <data-dir>/check-images). Gitignored.")

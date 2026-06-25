@@ -42,12 +42,15 @@ Build order (Phase 1 pilot — one Hines Homes account, one month):
 
 Wiring: `bank/accounts.py` + `config/bank_accounts.yaml` drive extraction,
 reconciliation, and check-image reads from `skill/run.py` (`--bank-dir`,
-`--bank-accounts`, `--check-images`, `--check-image-dir`). Check images are read
-from a local sync via `bank/check_image_source.py` (`LocalCheckImages`) — the
-weekly CLI is a plain Python process with no MCP access, so images are synced down
-from SharePoint into the gitignored `--check-image-dir` (filename patterns per
-account). A SharePoint-direct (Microsoft Graph) source drops in behind the same
-`attach`/`read_front`/`read_back` interface once app credentials are provisioned.
+`--bank-accounts`, `--check-images`, `--check-image-source`, `--check-image-dir`).
+Check images are read by `bank/check_image_source.py` from one of two backends
+behind a shared `CheckImageSource` core: `LocalCheckImages` reads a local sync
+under the gitignored `--check-image-dir` (the weekly CLI has no MCP access, so
+images are synced down), and `GraphCheckImages` reads SharePoint directly via
+Microsoft Graph app-only credentials (`GRAPH_*` env vars) for environments that
+can't pre-sync. A backend only implements `_locator` (filename → reference) and
+`_load` (reference → bytes); the filename patterns per account are identical
+either way.
 
 Reconciliation is per entity for now; multi-account splitting by
 `account_fingerprint` is keyed on the per-account fingerprint. Findings flow
