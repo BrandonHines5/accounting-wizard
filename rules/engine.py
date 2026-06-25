@@ -23,6 +23,8 @@ class RunContext:
     vendors: pd.DataFrame        # canonical, validated
     registry: EntityRegistry
     config: RulesConfig
+    baselines: pd.DataFrame | None = None   # prior baselines (Tier 2); None until established
+    prior_vendors: pd.DataFrame | None = None   # last-synced vendor master (T1-14 diffing)
 
     @property
     def active_entity_ids(self) -> list[str]:
@@ -57,6 +59,14 @@ def pending_rule(rule_id: str, title: str, requires: str, notes: str = ""):
     _RULES[rule_id] = RuleSpec(rule_id, title, False, requires, None, notes)
 
 
+def external_rule(rule_id: str, title: str, requires: str,
+                  implemented: bool = True, notes: str = ""):
+    """Declare a rule implemented OUTSIDE the engine (e.g. Tier 4 reconciliation,
+    which needs bank data). It is listed on the Methodology sheet for honest
+    coverage but never executed by run_all (func is None)."""
+    _RULES[rule_id] = RuleSpec(rule_id, title, implemented, requires, None, notes)
+
+
 def all_rules() -> list[RuleSpec]:
     return sorted(_RULES.values(), key=lambda r: r.rule_id)
 
@@ -65,7 +75,7 @@ def run_all(ctx: RunContext) -> list[Finding]:
     entities_by_id = {e.id: e for e in ctx.registry}
     findings: list[Finding] = []
     for spec in all_rules():
-        if not spec.implemented:
+        if not spec.implemented or spec.func is None:    # pending or external-flow
             continue
         for finding in spec.func(ctx):
             findings.append(apply_entity_severity_floor(finding, entities_by_id))

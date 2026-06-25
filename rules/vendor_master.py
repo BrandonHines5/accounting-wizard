@@ -1,7 +1,8 @@
 """Vendor master hygiene rules (T1-10 … T1-15).
 
-Implemented: T1-10, T1-11 (QB vendor list + payments only).
-T1-12/13/14/15 need roster / SoS / bank-detail-change feeds — declared pending.
+Implemented: T1-10, T1-11 (QB vendor list + payments), and T1-14 (vendor
+bank-detail change, which diffs the persisted vendor master run-over-run).
+T1-12/13/15 need roster / SoS feeds — declared pending.
 """
 from __future__ import annotations
 
@@ -113,9 +114,45 @@ def new_vendor_large_payment(ctx: RunContext):
                 )
 
 
+@rule("T1-14", "Vendor bank detail change",
+      requires="Vendor master persisted run-over-run (--store supabase)")
+def vendor_bank_detail_change(ctx: RunContext):
+    """Any change to a vendor's bank fingerprint since the last run is CRITICAL
+    until callback-verified — no exceptions (CLAUDE.md hard rule). Diffs the
+    current vendor master against the prior persisted one (ctx.prior_vendors); a
+    clean no-op on the first run. A first-ever fingerprint (prior was blank) is a
+    new vendor, not a change, and is left to the new-vendor rules."""
+    prior = ctx.prior_vendors
+    if prior is None or len(prior) == 0:
+        return
+    prior_fp = {(row["entity_id"], str(row["vendor_id"])): row.get("bank_fingerprint")
+                for _, row in prior.iterrows()}
+    active = set(ctx.active_entity_ids)
+    for _, v in ctx.vendors.iterrows():
+        current = v.get("bank_fingerprint")
+        if v["entity_id"] not in active or pd.isna(current) or not current:
+            continue
+        was = prior_fp.get((v["entity_id"], str(v["vendor_id"])))
+        if was is None or (isinstance(was, float) and pd.isna(was)) or not was:
+            continue  # first time we have details — a new vendor, not a change
+        if str(was) != str(current):
+            yield Finding(
+                rule_id="T1-14",
+                severity=Severity.CRITICAL,
+                entity_ids=[v["entity_id"]],
+                question=(
+                    f"{v['vendor_name']}'s bank payment details changed since the last run. "
+                    "Has this change been verified by a call-back to a known, "
+                    "previously-used phone number for this vendor?"
+                ),
+                # stat_key includes the new (hashed) fingerprint so a later, different
+                # change is a distinct finding, not a suppressed repeat of this one.
+                details={"vendor": v["vendor_name"], "vendor_id": str(v["vendor_id"]),
+                         "stat_key": f"bankchange:{v['entity_id']}:{v['vendor_id']}:{current}"},
+            )
+
+
 pending_rule("T1-12", "Vendor ↔ employee overlap", requires="QB + team roster export",
              notes="Needs an employee roster feed (no payroll data — contact fields only).")
 pending_rule("T1-13", "Shell-company indicators", requires="QB + AR SoS lookup")
-pending_rule("T1-14", "Vendor bank detail change", requires="Adaptive/QB vendor snapshots run-over-run",
-             notes="CRITICAL until callback-verified — no exceptions. Needs prior-run snapshot diffing (Phase 2 baseline).")
 pending_rule("T1-15", "SoS registration check", requires="AR Secretary of State lookup")

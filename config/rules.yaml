@@ -10,6 +10,10 @@ defaults:
   fuzzy_dup_amount_tolerance: 1.00
   fuzzy_dup_window_days: 60
 
+  # T1-08: a vendor with at least this many bill payments is "AP-workflow";
+  # a direct manual check to them is then flagged as a workflow bypass.
+  ap_vendor_established_min: 3
+
   # T1-07: weekdays AP batches normally run (0=Mon … 6=Sun).
   # Empty = rule disabled. Hines data shows Wednesday-dominant cadence
   # (~60%) — set to [2] only if strict batch days become policy.
@@ -27,11 +31,36 @@ defaults:
   wrong_entity_established_min: 5
   wrong_entity_stray_max: 2
 
+  # T1-20: vendor/cost-code mismatch — a vendor's "home" cost code is one used at
+  # least established_min times; a code used at most stray_max times is a stray.
+  vendor_costcode_established_min: 4
+  vendor_costcode_stray_max: 1
+
   # T1-24: inter-company balances must agree within this tolerance
   intercompany_tolerance: 0.01
 
   # T1-30: credit memos / write-offs above this are listed for review
   credit_memo_threshold: 250
+
+  # Tier 4 bank reconciliation (three-way match)
+  bank_amount_tolerance: 0.01      # cleared vs recorded amount must agree within this
+  bank_date_tolerance_days: 5      # non-check match: bank date vs book date window
+  clearing_gap_days: 30            # recorded→cleared gap beyond this is flagged
+
+  # Tier 4 check-image vision reads (T4-03/04/05)
+  check_image_min_confidence: 90   # read confidence (0–100) below this → human review queue
+
+  # Tier 2 statistical checks
+  round_number_base: 100           # T2-02: "round" = an exact multiple of this dollar amount
+  round_number_min_count: 12       # T2-02: min payments before the round ratio is meaningful
+  round_number_ratio: 0.6          # T2-02: flag when at least this fraction are round
+  benford_min_count: 40            # T2-02: min sample to test first-digit distribution
+  benford_chi2_critical: 20.09     # T2-02: chi-square df=8 critical value (~p<0.01)
+  payment_timing_min_payments: 6   # T2-10: min payments to assess a vendor's cadence
+  payment_timing_mad_z: 3.5        # T2-10: robust (MAD) modified z-score outlier threshold
+  concentration_shift_threshold: 0.25  # T2-05: share rise (fraction) vs baseline to flag
+  concentration_dominance: 0.5         # T2-05: only flag once a vendor holds >= this share
+  concentration_min_total: 1000        # T2-05: ignore cost codes with little spend
 
 # Account-name pattern that identifies inter-company GL accounts, e.g.
 # "Due from Beta", "1920 · Loan to 13525WM, LLC". Group 1 = kind (due|loan),

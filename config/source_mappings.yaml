@@ -12,6 +12,11 @@
 #                 types are dropped (another report owns them)
 # columns:        canonical_column: "Export Header" (or _colN for unlabeled)
 # constants:      canonical_column: fixed value
+#
+# NOTE: no report currently maps `cost_code` (QB Item / job-phase). The rules that
+# key off it — T1-20 (vendor/cost-code mismatch) and T2-05 (vendor concentration
+# shift) — are implemented but dormant until a cost-code column is added to a
+# memorized report and mapped here.
 
 # Vendor Transaction Detail is the canonical source for vendor money movement:
 # bills, bill payments, and direct checks each appear exactly once here.

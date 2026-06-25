@@ -20,7 +20,7 @@ def test_workbook_structure(ctx, registry, tmp_path):
     # Methodology lists the full spec — implemented AND pending — for honest coverage
     methodology_ids = [row[0].value for row in wb["Methodology"].iter_rows(min_row=2)]
     assert "T1-01" in methodology_ids
-    assert "T1-14" in methodology_ids  # pending rule still listed
+    assert "T1-15" in methodology_ids  # pending rule still listed
     statuses = {row[0].value: row[2].value for row in wb["Methodology"].iter_rows(min_row=2)}
-    assert statuses["T1-14"] == "Pending data source"
+    assert statuses["T1-15"] == "Pending data source"
     assert statuses["T1-01"] == "Implemented"

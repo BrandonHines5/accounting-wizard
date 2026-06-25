@@ -17,6 +17,10 @@ a tiered detection battery, and produces severity-ranked exceptions workbooks.
 pip install -r requirements.txt
 pytest                                   # synthetic-fixture test suite
 
+# See it work on the committed synthetic dataset (no real data, fully offline):
+python -m skill.run --data-dir examples/sample-data --entity hines-homes \
+  --tier3 off --store none --output output/example.xlsx   # see examples/README.md
+
 # weekly run: drop exports in data/<entity_id>/ first (see skill/SKILL.md)
 python -m skill.run                      # all active entities
 python -m skill.run --entity hines-homes # pilot scope

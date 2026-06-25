@@ -11,9 +11,20 @@ output/
 *.qbw
 *.env
 .env*
+# Check/statement images carry account numbers + signatures — never commit them.
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+*.gif
+*.webp
+*.heic
 
-# Synthetic test fixtures are safe and explicitly re-included
+# Synthetic test fixtures + the runnable example dataset are safe (fictional
+# data) and explicitly re-included
 !tests/fixtures/*.csv
+!examples/**/*.csv
 
 # Placeholder README + per-entity drop folders exist in fresh clones,
 # but every real file dropped inside them stays ignored
@@ -21,6 +32,10 @@ output/
 !data/*/
 data/*/*
 !data/*/.gitkeep
+
+# Tier 4 bank-account registry — the real one references account structure and
+# env-secret names; keep it local. The committed template is bank_accounts.example.yaml.
+config/bank_accounts.yaml
 
 # Python
 __pycache__/

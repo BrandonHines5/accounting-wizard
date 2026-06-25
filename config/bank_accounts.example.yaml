@@ -1,0 +1,47 @@
+# Tier 4 bank-account registry — TEMPLATE.
+#
+# Copy to config/bank_accounts.yaml and edit. The weekly run reads
+# config/bank_accounts.yaml if it exists; otherwise Tier 4 is skipped.
+#
+# SECURITY:
+#   - NO raw account numbers in this file. Each account names an environment
+#     variable (account_number_env); the run reads the number from the env at
+#     runtime and hashes it (core/fingerprint.py) — it is never stored.
+#   - Statement files live under --bank-dir (default <data-dir>/bank, which is
+#     gitignored). `statement_glob` is relative to that directory.
+#
+# One entry per (entity, account). `entity_id` must exist in entities.yaml.
+
+accounts:
+  # Pilot: Hines Homes operating account, CSV export from online banking.
+  - entity_id: hines-homes
+    label: operating
+    format: csv                              # csv | xlsx | pdf
+    statement_glob: "hines-homes/operating/*.csv"
+    account_number_env: HINES_HOMES_OPERATING_ACCT
+    columns:                                 # bank export header -> canonical field
+      date: "Posting Date"
+      description: "Description"
+      amount: "Amount"                       # signed; negative = money out
+      check_no: "Check or Slip #"
+    # Optional: cancelled-check images for T4-03/04/05 vision reads. Images are
+    # synced locally under --check-image-dir (gitignored); `dir` is a subfolder,
+    # patterns use {check_no}/{entity_id}/{account}. Omit the block to skip reads.
+    check_images:
+      dir: "hines-homes/operating"
+      front: "{check_no}_front.jpg"
+      back: "{check_no}_back.jpg"
+
+  # Example: a bank that splits debits/credits into two columns instead of a
+  # single signed amount. Provide debit + credit and omit amount.
+  - entity_id: hope-filled
+    label: donations
+    format: xlsx
+    statement_glob: "hope-filled/donations/*.xlsx"
+    account_number_env: HOPE_FILLED_DONATIONS_ACCT
+    columns:
+      date: "Date"
+      description: "Memo"
+      debit: "Withdrawals"
+      credit: "Deposits"
+      check_no: "Check #"
