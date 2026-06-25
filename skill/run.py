@@ -39,6 +39,18 @@ def _make_store(mode: str, schema: str | None):
     return SupabaseFindingsStore.from_env(schema)
 
 
+def _sync_sources(schema, registry, transactions, vendors) -> None:
+    """Mirror the registry and canonical source data to Supabase. Entities go
+    first: transactions/vendors/bank_transactions all FK to entities(id), so the
+    targets must exist before anything referencing them is written."""
+    from persistence.source_store import (EntityRegistryStore, TransactionStore,
+                                          VendorStore)
+    EntityRegistryStore.from_env(schema).save(registry)
+    n_v = VendorStore.from_env(schema).save(vendors)
+    n_t = TransactionStore.from_env(schema).save(transactions)
+    print(f"  Synced {len(registry)} entities, {n_v} vendors, {n_t} transactions to Supabase")
+
+
 def _make_judge(mode: str, model: str | None):
     """Resolve --tier3 mode to a judge, or None to skip Tier 3.
 
@@ -270,6 +282,11 @@ def main() -> None:
           f"{transactions['entity_id'].nunique()} entities"
           + (f" ({args.since or 'start'} → {args.until or 'latest'})"
              if args.since or args.until else ""))
+
+    # Seed Supabase (registry first — it's the FK target) before anything that
+    # references entities (transactions, vendors, bank lines) is persisted.
+    if args.store == "supabase":
+        _sync_sources(args.supabase_schema, registry, transactions, vendors)
 
     ctx = RunContext(transactions=transactions, vendors=vendors,
                      registry=registry, config=config)
