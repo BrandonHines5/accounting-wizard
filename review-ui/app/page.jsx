@@ -38,6 +38,10 @@ function Login({ supabase }) {
     e.preventDefault();
     setBusy(true); setMsg(null);
     const redirect = typeof window !== "undefined" ? window.location.origin : undefined;
+    // shouldCreateUser stays true: a reviewer's first sign-in has no auth.users
+    // row yet, so false would block every first login. Authorization (who can see
+    // findings) is enforced by the review_allowlist-gated RPCs, not by who can
+    // create a bare auth account.
     const { error } = await supabase.auth.signInWithOtp({
       email: email.trim().toLowerCase(),
       options: { emailRedirectTo: redirect, shouldCreateUser: true },
@@ -92,7 +96,7 @@ function Dashboard({ supabase, session }) {
   const load = useCallback(async () => {
     setError(null);
     const { data, error } = await supabase.rpc("list_findings");
-    if (error) setError(error.message);
+    if (error) { setError(error.message); setFindings([]); }  // resolve the loading state on error
     else setFindings(data || []);
   }, [supabase]);
 
@@ -112,6 +116,11 @@ function Dashboard({ supabase, session }) {
 
   const visible = (findings || []).filter((f) => showResolved || f.disposition === "open");
   const openCount = (findings || []).filter((f) => f.disposition === "open").length;
+  // Known severities first, then any unexpected ones, so nothing is counted-but-hidden.
+  const severityGroups = [
+    ...SEVERITIES,
+    ...[...new Set(visible.map((f) => f.severity))].filter((s) => !SEVERITIES.includes(s)),
+  ];
 
   return (
     <div className="wrap">
@@ -146,7 +155,7 @@ function Dashboard({ supabase, session }) {
             </div>
           )}
 
-          {SEVERITIES.map((sev) => {
+          {severityGroups.map((sev) => {
             const group = visible.filter((f) => f.severity === sev);
             if (!group.length) return null;
             return (
