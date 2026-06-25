@@ -104,21 +104,28 @@ function Dashboard({ supabase, session }) {
     const { error } = await supabase.rpc("set_finding_disposition", {
       p_fingerprint: fp, p_disposition: value, p_note: trimmed || null,
     });
-    if (error) { setError(error.message); await load(); return; }
+    // load() clears the error banner, so set the message AFTER reloading.
+    if (error) { await load(); setError(error.message); return; }
     setFindings((prev) =>
       prev.map((f) => (f.fingerprint === fp
         ? { ...f, disposition: value, disposition_note: trimmed || null,
             dispositioned_by: email, _busy: false } : f)));
     // Feed the reason back to the AI: re-review every remaining open finding in
     // light of the accumulated feedback, then reload to show any updates. The
-    // disposition is already saved, so a re-review failure is non-fatal.
+    // disposition itself is already saved, so a re-review failure is non-fatal —
+    // but surface it (after the reload, which resets the banner) so a misconfig
+    // or timeout isn't silent.
+    let reviewErr = null;
     if (trimmed) {
       setReviewing(true);
-      try { await supabase.functions.invoke("feedback-review", { body: {} }); }
-      catch (_) { /* surfaced on reload if anything actually changed */ }
+      try {
+        const { error: e } = await supabase.functions.invoke("feedback-review", { body: {} });
+        reviewErr = e || null;
+      } catch (e) { reviewErr = e; }
       setReviewing(false);
     }
     await load();
+    if (reviewErr) setError(reviewErr.message || String(reviewErr));
   }
 
   const visible = (findings || []).filter((f) => showResolved || f.disposition === "open");

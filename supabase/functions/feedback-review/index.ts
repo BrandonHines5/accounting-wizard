@@ -11,14 +11,22 @@
 //     can never downgrade a finding past a floor. It may note a severity concern in
 //     ai_assessment, but the badge only changes through the governed pipeline.
 //   - Only updates OPEN findings, and only those the feedback genuinely bears on.
-//   - Degrades gracefully: with no ANTHROPIC_API_KEY set it no-ops (the reason is
-//     still saved by set_finding_disposition; only the AI re-review is skipped).
+//   - A missing ANTHROPIC_API_KEY is a misconfiguration: returns 503, not a silent
+//     no-op. The disposition + reason are already saved by set_finding_disposition
+//     before this runs, so only the AI re-review is affected.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const SCHEMA = "financial_forensics";
 const MODEL = Deno.env.get("ANTHROPIC_MODEL") || "claude-sonnet-4-6";
 const TIMEOUT_MS = 60_000;
+
+// Defense-in-depth egress guard for the no-raw-bank-numbers hard rule: the RPC
+// redacts disposition_note at write time, but this function is the external egress
+// to Anthropic, so scrub long digit runs (incl. space/hyphen-separated) again here —
+// covering legacy rows or any out-of-band writes that bypassed the RPC.
+const redactDigits = (s: string | null) =>
+  s ? s.replace(/\d([ -]?\d){6,}/g, "[redacted]") : s;
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -50,7 +58,8 @@ Deno.serve(async (req) => {
     if (!allow) return json({ error: "not authorized" }, 403);
 
     const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
-    if (!apiKey) return json({ updated: 0, skipped: "ANTHROPIC_API_KEY not set" });
+    // A missing key is a server misconfiguration, not a successful no-op — surface it.
+    if (!apiKey) return json({ error: "anthropic_api_key_not_configured" }, 503);
 
     // The human feedback corpus (dispositioned findings that carry a reason) and
     // the still-open findings to re-review against it. Propagate query errors
@@ -109,7 +118,9 @@ Deno.serve(async (req) => {
     };
 
     const payload = {
-      reviewer_feedback: feedback,
+      reviewer_feedback: feedback.map((f) => ({
+        ...f, disposition_note: redactDigits(f.disposition_note),
+      })),
       open_findings: open.map((f) => ({
         fingerprint: f.fingerprint, rule_id: f.rule_id, severity: f.severity,
         question: f.question, details: f.details, entity_ids: f.entity_ids,
@@ -157,17 +168,20 @@ Deno.serve(async (req) => {
     const openByFp = new Map(open.map((f) => [f.fingerprint, f]));
     const now = new Date().toISOString();
     let applied = 0;
+    const seen = new Set<string>();
     const failures: { fingerprint: string; error: string }[] = [];
     for (const u of updates) {
-      const cur = openByFp.get(u.fingerprint);
-      if (!cur || !u.ai_assessment?.trim()) continue;       // only touch loaded open rows
-      const { error } = await ff.from("findings").update({
+      const cur = openByFp.get(u?.fingerprint);
+      if (!cur || !u.ai_assessment?.trim() || seen.has(u.fingerprint)) continue;
+      seen.add(u.fingerprint);                               // dedupe repeated AI entries
+      const { data: updated, error } = await ff.from("findings").update({
         ai_assessment: u.ai_assessment,
         suggested_disposition: u.suggested_disposition ?? null,
         ai_updated_at: now,
-      }).eq("fingerprint", u.fingerprint).eq("disposition", "open");
+      }).eq("fingerprint", u.fingerprint).eq("disposition", "open")
+        .select("fingerprint").maybeSingle();
       if (error) failures.push({ fingerprint: u.fingerprint, error: error.message });
-      else applied++;
+      else if (updated) applied++;                           // count only rows actually updated
     }
     return json({ updated: applied, considered: open.length,
                   ...(failures.length ? { failures } : {}) });
