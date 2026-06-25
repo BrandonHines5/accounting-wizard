@@ -231,6 +231,10 @@ def main() -> None:
     parser.add_argument("--supabase-schema", default=None,
                         help="Supabase schema holding the findings table "
                              "(default: financial_forensics).")
+    parser.add_argument("--update-baselines", action="store_true",
+                        help="After the run, recompute Tier 2 baselines (vendor "
+                             "share-of-spend) from this data and store them "
+                             "(needs --store supabase).")
     parser.add_argument("--bank-dir", default=None,
                         help="Directory of bank statement exports for Tier 4 "
                              "(default: <data-dir>/bank). Gitignored.")
@@ -285,12 +289,18 @@ def main() -> None:
              if args.since or args.until else ""))
 
     # Seed Supabase (registry first — it's the FK target) before anything that
-    # references entities (transactions, vendors, bank lines) is persisted.
+    # references entities (transactions, vendors, bank lines) is persisted, and
+    # load any prior Tier 2 baselines so T2-05 has something to compare against.
+    baselines = None
     if args.store == "supabase":
         _sync_sources(args.supabase_schema, registry, transactions, vendors)
+        from persistence.baseline_store import BaselineStore
+        baselines = BaselineStore.from_env(args.supabase_schema).load()
+        if len(baselines):
+            print(f"  Loaded {len(baselines)} Tier 2 baselines")
 
     ctx = RunContext(transactions=transactions, vendors=vendors,
-                     registry=registry, config=config)
+                     registry=registry, config=config, baselines=baselines)
     findings = run_all(ctx)
     print(f"  {len(findings)} Tier 1–2 rule findings")
 
@@ -318,6 +328,13 @@ def main() -> None:
 
     if store is not None:
         store.save(findings)
+
+    if args.update_baselines and args.store == "supabase":
+        from analytics.baselines import vendor_share_baselines
+        from persistence.baseline_store import BaselineStore
+        records = vendor_share_baselines(transactions, set(ctx.active_entity_ids))
+        print(f"  Updated {BaselineStore.from_env(args.supabase_schema).save(records)} "
+              "Tier 2 baselines")
 
     output = args.output or str(
         REPO_ROOT / "output" / f"exceptions_{datetime.now():%Y%m%d_%H%M}.xlsx")

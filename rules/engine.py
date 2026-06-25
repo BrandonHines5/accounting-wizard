@@ -23,6 +23,7 @@ class RunContext:
     vendors: pd.DataFrame        # canonical, validated
     registry: EntityRegistry
     config: RulesConfig
+    baselines: pd.DataFrame | None = None   # prior baselines (Tier 2); None until established
 
     @property
     def active_entity_ids(self) -> list[str]:
