@@ -41,14 +41,13 @@ function MicrosoftMark() {
 function Login({ supabase }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
-  const [showEmail, setShowEmail] = useState(false);
 
   async function signInMicrosoft() {
     setBusy(true); setMsg(null);
     const redirectTo = typeof window !== "undefined" ? window.location.origin : undefined;
-    // Azure (Microsoft Entra) provider, same as our other sites. On success the
-    // browser redirects to Microsoft and only errors return here; the allowlist
-    // RPCs decide who can actually see findings once signed in.
+    // Microsoft (Azure / Entra) is the only sign-in method. On success the browser
+    // redirects to Microsoft and only errors return here; the allowlist-gated RPCs
+    // then decide who can actually see findings once signed in.
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "azure",
       options: { scopes: "openid profile email", redirectTo },
@@ -66,68 +65,7 @@ function Login({ supabase }) {
           <span>{busy ? "Redirecting…" : "Continue with Microsoft"}</span>
         </button>
         {msg && <div className={`note ${msg.kind}`}>{msg.text}</div>}
-        <button className="link" style={{ marginTop: 16 }} onClick={() => setShowEmail((v) => !v)}>
-          {showEmail ? "Hide email sign-in" : "Use email instead"}
-        </button>
-        {showEmail && <EmailLogin supabase={supabase} />}
       </div>
-    </div>
-  );
-}
-
-// Email magic-link / 6-digit-code fallback. Kept available so a reviewer is never
-// locked out before the Azure provider is configured, but Microsoft is the primary.
-function EmailLogin({ supabase }) {
-  const [email, setEmail] = useState("");
-  const [code, setCode] = useState("");
-  const [sent, setSent] = useState(false);
-  const [msg, setMsg] = useState(null);
-  const [busy, setBusy] = useState(false);
-
-  async function sendLink(e) {
-    e.preventDefault();
-    setBusy(true); setMsg(null);
-    const redirect = typeof window !== "undefined" ? window.location.origin : undefined;
-    // shouldCreateUser stays true: a reviewer's first sign-in has no auth.users
-    // row yet. Authorization is enforced by the allowlist-gated RPCs, not by who
-    // can create a bare auth account.
-    const { error } = await supabase.auth.signInWithOtp({
-      email: email.trim().toLowerCase(),
-      options: { emailRedirectTo: redirect, shouldCreateUser: true },
-    });
-    setBusy(false);
-    if (error) setMsg({ kind: "err", text: error.message });
-    else { setSent(true); setMsg({ kind: "ok", text: "Check your email — click the link, or enter the 6-digit code below." }); }
-  }
-
-  async function verifyCode(e) {
-    e.preventDefault();
-    setBusy(true); setMsg(null);
-    const { error } = await supabase.auth.verifyOtp({
-      email: email.trim().toLowerCase(), token: code.trim(), type: "email",
-    });
-    setBusy(false);
-    if (error) setMsg({ kind: "err", text: error.message });
-  }
-
-  return (
-    <div style={{ marginTop: 14, textAlign: "left" }}>
-      <form onSubmit={sendLink}>
-        <input type="email" required placeholder="you@hineshomes.com"
-          value={email} onChange={(e) => setEmail(e.target.value)} />
-        <button disabled={busy} style={{ width: "100%" }}>
-          {busy ? "Sending…" : sent ? "Resend link / code" : "Send sign-in link"}
-        </button>
-      </form>
-      {sent && (
-        <form onSubmit={verifyCode} style={{ marginTop: 14 }}>
-          <input type="text" inputMode="numeric" placeholder="6-digit code (optional)"
-            value={code} onChange={(e) => setCode(e.target.value)}
-            style={{ width: "100%" }} />
-          <button disabled={busy || !code} style={{ width: "100%" }}>Verify code</button>
-        </form>
-      )}
-      {msg && <div className={`note ${msg.kind}`}>{msg.text}</div>}
     </div>
   );
 }
