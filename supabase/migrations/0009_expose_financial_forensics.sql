@@ -8,7 +8,10 @@
 -- table access here) can read/write. anon/authenticated still cannot reach the schema
 -- directly and continue to use the public RPCs.
 
-grant usage on schema financial_forensics to service_role;
+-- USAGE for all API roles so PostgREST's schema-cache introspection registers the
+-- tables (without this, requests get PGRST205). Table privileges stay service_role
+-- only, and RLS is deny-all, so anon/authenticated still cannot read any data.
+grant usage on schema financial_forensics to anon, authenticated, service_role;
 grant all on all tables in schema financial_forensics to service_role;
 grant all on all sequences in schema financial_forensics to service_role;
 alter default privileges in schema financial_forensics grant all on tables to service_role;
