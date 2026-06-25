@@ -7,10 +7,17 @@ from any PC, deployed to Vercel.
 (auto-deploys from `main` via the GitHub → Vercel integration; no env vars required —
 the Supabase URL + anon key are baked in as public-by-design defaults.)
 
-- **Auth:** Supabase email sign-in (magic link or 6-digit code). Only emails in the
-  `public.review_allowlist` table can read findings.
+- **Auth:** Microsoft (Microsoft Entra / Azure) sign-in via Supabase OAuth — same as
+  our other sites. Email magic-link / 6-digit code is kept as a hidden fallback
+  ("Use email instead") so no one is locked out before the Azure provider is wired up.
+- **Authorization (admin-only):** signing in is not the same as access. Only addresses
+  in `public.review_allowlist` can read findings or set dispositions — both the
+  `list_findings()` read path and the `set_finding_disposition()` write path are gated
+  by `is_reviewer()`. The allowlist currently holds **only the admin**
+  (`brandon@hineshomes.com`); anyone else who signs in lands on a "not on the allowlist"
+  screen and sees nothing.
 - **Data access:** the app never touches the `financial_forensics` schema directly.
-  It calls allowlist-gated `public` RPCs — `list_findings()` and
+  It calls allowlist-gated `public` RPCs — `is_reviewer()`, `list_findings()` and
   `set_finding_disposition(fingerprint, disposition)` — which run as
   `SECURITY DEFINER`. Setting a disposition feeds the run-over-run learning loop.
 
@@ -24,23 +31,43 @@ npm install
 npm run dev    # http://localhost:3000
 ```
 
-## Add a reviewer
+## Grant a reviewer access (admin task)
+Keep it to the admin for now. To add someone later:
 ```sql
 insert into public.review_allowlist (email) values ('someone@hineshomes.com');
 ```
+To revoke: `delete from public.review_allowlist where email = '...';`
 
-## One-time Supabase Auth setting (required for the email link)
-A new Supabase project's **Site URL** defaults to `http://localhost:3000`, so magic
-links bounce to localhost ("refused to connect") instead of the deployed app. Fix it
-once, in the dashboard — there is no API/MCP tool for auth URL config:
+## One-time Supabase setup (dashboard — no API/MCP tool for auth config)
 
-1. Open **Authentication → URL Configuration**
-   (https://supabase.com/dashboard/project/wxzvboiymeyavebxkorh/auth/url-configuration).
-2. **Site URL:** `https://accounting-wizard.vercel.app`
-3. **Redirect URLs:** add `https://accounting-wizard.vercel.app/**`
-   (keep `http://localhost:3000/**` if you also run it locally).
-4. Save. The magic link now returns to the live app on any PC.
+These are project settings, done once. Links use this project
+(`wxzvboiymeyavebxkorh`).
 
-The in-app 6-digit code path is a fallback, but it only works if the **Magic Link**
-email template includes `{{ .Token }}` (Authentication → Email Templates). The Site
-URL fix above is the simpler, permanent solution.
+### 1. Enable the Microsoft (Azure) provider
+**Authentication → Providers → Azure**
+(https://supabase.com/dashboard/project/wxzvboiymeyavebxkorh/auth/providers):
+
+- Toggle **Azure** on.
+- **Application (client) ID** and **Secret Value** — from an Entra app registration
+  (reuse the one our other sites use, or create a new one; see below).
+- **Azure Tenant URL:** `https://login.microsoftonline.com/<TENANT_ID>`.
+- Note the **callback URL** Supabase shows —
+  `https://wxzvboiymeyavebxkorh.supabase.co/auth/v1/callback` — it must be a
+  **Redirect URI** on the Entra app registration (Azure Portal → App registrations →
+  your app → Authentication → Web → Redirect URIs). Make sure the app exposes the
+  `email` claim (delegated `email`/`openid`/`profile` scopes) so the allowlist match
+  works.
+
+### 2. Point auth URLs at the deployed app
+A new Supabase project's **Site URL** defaults to `http://localhost:3000`, so the
+OAuth redirect (and magic links) bounce to localhost ("refused to connect") instead
+of the live app. **Authentication → URL Configuration**
+(https://supabase.com/dashboard/project/wxzvboiymeyavebxkorh/auth/url-configuration):
+
+- **Site URL:** `https://accounting-wizard.vercel.app`
+- **Redirect URLs:** add `https://accounting-wizard.vercel.app/**`
+  (keep `http://localhost:3000/**` if you also run it locally).
+
+After both steps, "Continue with Microsoft" works from any PC. The email fallback
+(under "Use email instead") also needs step 2; its 6-digit code additionally needs
+`{{ .Token }}` in the **Magic Link** email template.

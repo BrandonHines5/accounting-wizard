@@ -11,8 +11,9 @@ const SUPABASE_ANON_KEY =
 
 let _client;
 
-// Single browser client. Implicit flow keeps this a pure SPA: the magic-link email
-// returns to the app with the session in the URL, which supabase-js picks up.
+// Single browser client. Implicit flow keeps this a pure SPA: both the Microsoft
+// (Azure) OAuth redirect and the magic-link email return to the app with the
+// session in the URL, which supabase-js picks up via detectSessionInUrl.
 export function getSupabase() {
   if (!_client) {
     _client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {

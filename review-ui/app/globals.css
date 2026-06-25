@@ -37,6 +37,12 @@ button {
 button:hover { border-color: #3a4150; }
 button:disabled { opacity: .5; cursor: default; }
 button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+button.btn-ms {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  width: 100%; background: #2f2f2f; border-color: #3a3a3a; color: #fff;
+  padding: 11px 12px; font-weight: 600;
+}
+button.btn-ms:hover { border-color: #555; }
 button.link { background: none; border: none; color: var(--muted); padding: 4px 6px; }
 
 .card {
