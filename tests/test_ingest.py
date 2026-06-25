@@ -2,8 +2,9 @@ import pandas as pd
 import pytest
 
 from core.model import TRANSACTION_COLUMNS
-from ingest.normalize import (apply_group_headers, ingest_data_dir, load_mappings,
-                              normalize_frame, read_report, synthesize_source_ids)
+from ingest.normalize import (apply_group_headers, ensure_unique_source_ids,
+                              ingest_data_dir, load_mappings, normalize_frame,
+                              read_report, synthesize_source_ids)
 
 
 def credit_memo_raw(**overrides):
@@ -66,6 +67,72 @@ def test_synthesized_source_ids_fill_missing():
     out = synthesize_source_ids(df, "qb__general_ledger")
     assert out["source_id"].tolist() == ["qb__general_ledger:0", "75256",
                                          "qb__general_ledger:2"]
+
+
+def test_ensure_unique_source_ids_suffixes_split_lines():
+    # A credit memo split across two GL accounts shares one Trans #; the unique
+    # (entity_id, source_system, source_id) key would otherwise collide on upsert.
+    df = pd.DataFrame({
+        "entity_id": ["alpha", "alpha", "alpha"],
+        "source_system": ["qb", "qb", "qb"],
+        "source_id": ["75256", "75256", "90001"],
+    })
+    out = ensure_unique_source_ids(df)
+    assert out["source_id"].tolist() == ["75256", "75256#2", "90001"]
+    # The result is unique on the persistence conflict key.
+    assert not out.duplicated(["entity_id", "source_system", "source_id"]).any()
+
+
+def test_ensure_unique_source_ids_avoids_pre_suffixed_collision():
+    # A real id that already looks like "<base>#2" must not be re-minted: a naive
+    # rank+1 scheme would rewrite the 2nd "75256" to "75256#2" and collide with
+    # the existing one. The allocator skips taken suffixes instead.
+    df = pd.DataFrame({
+        "entity_id": ["alpha", "alpha", "alpha"],
+        "source_system": ["qb", "qb", "qb"],
+        "source_id": ["75256", "75256", "75256#2"],
+    })
+    out = ensure_unique_source_ids(df)
+    assert out["source_id"].tolist() == ["75256", "75256#3", "75256#2"]
+    assert not out.duplicated(["entity_id", "source_system", "source_id"]).any()
+
+
+def test_ensure_unique_source_ids_noop_when_already_unique():
+    df = pd.DataFrame({
+        "entity_id": ["alpha", "alpha"],
+        "source_system": ["qb", "qb"],
+        "source_id": ["qb__vendor_transaction_detail:0", "qb__general_ledger:0"],
+    })
+    out = ensure_unique_source_ids(df)
+    assert out["source_id"].tolist() == df["source_id"].tolist()
+
+
+def test_ingest_data_dir_dedupes_multi_split_credit_memo_keys(tmp_path, registry):
+    # Real failure mode from the weekly run: one credit memo (Trans # 75256) posted
+    # to two accounts → two rows sharing the source_id. Both must survive ingest
+    # with distinct keys so the chunked upsert into transactions doesn't blow up.
+    entity_dir = tmp_path / "alpha"
+    entity_dir.mkdir()
+    raw = credit_memo_raw(
+        **{
+            "Trans #": ["75256", "75256"],
+            "Date": ["2026-05-05", "2026-05-05"],
+            "Name": ["Acme Lumber", "Acme Lumber"],
+            "Num": ["0243", "0243"],
+            "Class": ["", ""],
+            "Account": ["5000 · COGS", "1200 · Inventory"],
+            "Amount": [65.18, -65.18],
+            "Memo": ["", ""],
+            "Last modified by": ["Megan", "Megan"],
+        }
+    )
+    raw.to_csv(entity_dir / "qb__credit_memos.csv", index=False)
+
+    transactions, _, _ = ingest_data_dir(tmp_path, registry, load_mappings())
+    assert len(transactions) == 2
+    assert sorted(transactions["source_id"]) == ["75256", "75256#2"]
+    assert not transactions.duplicated(
+        ["entity_id", "source_system", "source_id"]).any()
 
 
 def test_read_report_skips_title_rows_and_empty_sheets(tmp_path):
