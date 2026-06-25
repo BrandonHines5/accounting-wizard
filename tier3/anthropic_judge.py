@@ -12,13 +12,21 @@ higher wall-clock latency) behind the same `Judge` interface.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import os
 
 from core.findings import Severity
 from tier3.context import JudgmentPacket
-from tier3.judge import Judge, Tier3Assessment, coerce_severity
+from tier3.judge import Judge, Tier3Assessment, _failed_assessment, coerce_severity
 
 MODEL = "claude-opus-4-8"
+
+# Tier 3 calls are independent and network-bound, so the weekly batch fans them
+# out across a small thread pool rather than one-at-a-time — dozens of findings on
+# a reasoning model is otherwise 30–60 min of wall-clock. Kept low to stay clear of
+# Anthropic rate limits; override with the TIER3_CONCURRENCY env var.
+DEFAULT_CONCURRENCY = 6
 
 SYSTEM_PROMPT = """\
 You are the Tier 3 reviewer in a forensic-accounting detection battery for a \
@@ -96,6 +104,37 @@ class AnthropicJudge(Judge):
                        "content": f"Review this finding:\n{payload}"}],
         )
         return _parse(response, fallback=packet.finding.severity)
+
+    def assess_all(self, packets: list[JudgmentPacket]) -> list[Tier3Assessment]:
+        """Fan the per-finding calls out across a small thread pool, preserving
+        input order and the exact per-finding failure isolation of the sequential
+        base: one packet erroring degrades to a conservative no-change assessment
+        (severity preserved, flagged for human review), never aborting the batch
+        or dropping a finding. Falls back to the sequential path for 0–1 packets
+        or when TIER3_CONCURRENCY pins it to 1."""
+        try:
+            workers = max(1, int(os.environ.get("TIER3_CONCURRENCY", DEFAULT_CONCURRENCY)))
+        except ValueError:
+            workers = DEFAULT_CONCURRENCY
+        workers = min(workers, len(packets))
+        if workers <= 1:
+            return super().assess_all(packets)
+
+        # Construct the lazy client once here so its first-use init isn't raced
+        # across worker threads.
+        _ = self.client
+        results: list[Tier3Assessment | None] = [None] * len(packets)
+
+        def _run(index: int, packet: JudgmentPacket) -> None:
+            try:
+                results[index] = self.assess(packet)
+            except Exception as exc:  # noqa: BLE001 — degrade, never lose a finding
+                results[index] = _failed_assessment(packet, exc)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            for index, packet in enumerate(packets):
+                pool.submit(_run, index, packet)
+        return results
 
 
 def _parse(response, fallback: Severity) -> Tier3Assessment:

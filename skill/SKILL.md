@@ -47,7 +47,10 @@ python -m skill.run --data-dir data --output output/exceptions_$(date +%Y%m%d).x
 
 **Tier 3 modes** (`--tier3`): `auto` (default — Claude review when
 `ANTHROPIC_API_KEY` is set, otherwise skipped), `on` (require Claude),
-`heuristic` (deterministic offline triage, no API call), `off`.
+`heuristic` (deterministic offline triage, no API call), `off`. The Claude judge
+reviews findings concurrently (independent, network-bound calls) so a full weekly
+batch isn't reviewed one-at-a-time; set `TIER3_CONCURRENCY` (default 6) to tune
+the pool — lower it if you hit Anthropic rate limits.
 
 **Disposition memory** (`--store`): `none` (default) or `supabase` (needs
 `SUPABASE_URL` + `SUPABASE_SERVICE_KEY`). With a store, each run loads prior
