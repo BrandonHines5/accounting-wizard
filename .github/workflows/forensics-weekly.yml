@@ -1,0 +1,50 @@
+name: Weekly forensics run
+
+# Pulls the latest QB exports from SharePoint and runs the full detection battery on
+# a schedule — no hand-running. Findings land in the review site (Supabase); the
+# exceptions workbook is attached to the run as a downloadable artifact.
+#
+# One-time setup — add these as repository secrets
+# (Settings → Secrets and variables → Actions → New repository secret):
+#   GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET, GRAPH_DRIVE_ID
+#   SUPABASE_URL, SUPABASE_SERVICE_KEY
+#   ANTHROPIC_API_KEY   (optional — enables the Tier 3 AI review)
+
+on:
+  schedule:
+    - cron: "0 13 * * 1"     # every Monday 13:00 UTC (~7–8am Central) — adjust as you like
+  workflow_dispatch: {}        # plus a manual "Run workflow" button to run on demand
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Configure SharePoint pull
+        run: cp config/sharepoint.example.yaml config/sharepoint.yaml
+      - name: Pull exports + run the detection battery
+        env:
+          GRAPH_TENANT_ID: ${{ secrets.GRAPH_TENANT_ID }}
+          GRAPH_CLIENT_ID: ${{ secrets.GRAPH_CLIENT_ID }}
+          GRAPH_CLIENT_SECRET: ${{ secrets.GRAPH_CLIENT_SECRET }}
+          GRAPH_DRIVE_ID: ${{ secrets.GRAPH_DRIVE_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python -m skill.run --pull-sharepoint on --store supabase --tier3 auto
+      - name: Attach exceptions workbook
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exceptions-workbook
+          path: output/*.xlsx
+          if-no-files-found: ignore
