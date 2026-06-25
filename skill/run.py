@@ -48,7 +48,7 @@ def _maybe_pull_sharepoint(args, registry, mappings) -> None:
                              "(copy config/sharepoint.example.yaml)")
         return
     has_drive = bool(cfg.get("drive_id") or os.environ.get("GRAPH_DRIVE_ID"))
-    missing = [v for v in GRAPH_ENV if v not in os.environ]
+    missing = [v for v in GRAPH_ENV if not os.environ.get(v)]  # unset OR empty
     if missing or not has_drive:
         need = missing + ([] if has_drive else ["GRAPH_DRIVE_ID"])
         if args.pull_sharepoint == "on":
