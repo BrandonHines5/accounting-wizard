@@ -11,10 +11,11 @@ Methodology sheet:
   via a robust (MAD) modified z-score on the vendor's own inter-payment gaps.
   INFO.
 - **T2-05 — Vendor concentration shift** (`concentration.py` + `baselines.py`):
-  compares each vendor's current share of spend within a cost code against a
-  stored baseline; flags a sharp jump to dominance. MEDIUM. This one is
-  period-over-period: it reads `ctx.baselines` (loaded from the `baselines` table)
-  and is a no-op until a baseline exists. Refresh baselines with
+  compares each vendor's current share of spend within a cost code (over the
+  item-coded **cost lines** from Purchases by Item Detail) against a stored
+  baseline; flags a sharp jump to dominance. MEDIUM. Period-over-period: it reads
+  `ctx.baselines` (loaded from the `baselines` table) and is a no-op until a
+  baseline exists. Refresh baselines with
   `skill.run --update-baselines --store supabase`.
 
 Thresholds live in `config/rules.yaml`. The single-window checks (T2-02, T2-10)

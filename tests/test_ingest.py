@@ -91,7 +91,31 @@ def test_ingest_data_dir_uses_entity_folders(tmp_path, registry):
     rogue.mkdir()
     credit_memo_raw().to_csv(rogue / "qb__credit_memos.csv", index=False)
 
-    transactions, vendors = ingest_data_dir(tmp_path, registry, load_mappings())
+    transactions, vendors, cost_lines = ingest_data_dir(tmp_path, registry, load_mappings())
     assert len(transactions) == 1
     assert set(transactions["entity_id"]) == {"alpha"}
-    assert vendors.empty
+    assert vendors.empty and cost_lines.empty
+
+
+def test_ingest_purchases_by_item_detail_as_cost_lines(tmp_path, registry):
+    entity_dir = tmp_path / "alpha"
+    entity_dir.mkdir()
+    rows = [
+        ["Hines Homes LLC", "", "", "", "", "", "", "", ""],
+        ["Purchases by Item Detail", "", "", "", "", "", "", "", ""],
+        ["", "", "Type", "Date", "Num", "Memo", "Source Name", "Qty", "Amount"],
+        ["", "Framing", "", "", "", "", "", "", ""],          # Item section header
+        ["", "", "Bill", "2026-06-01", "1217", "lumber", "Lumber One", "1", "695.61"],
+        ["", "", "Bill", "2026-06-03", "1219", "lumber", "Lumber One", "1", "693.68"],
+        ["", "Total Framing", "", "", "", "", "", "2", "1389.29"],   # subtotal (dropped)
+        ["", "Cabinets", "", "", "", "", "", "", ""],
+        ["", "", "Bill", "2026-06-06", "INV1", "island", "Casa Blanca", "1", "5400.00"],
+    ]
+    pd.DataFrame(rows).to_csv(entity_dir / "qb__purchases_by_item_detail.csv",
+                              index=False, header=False)
+
+    transactions, vendors, cost_lines = ingest_data_dir(tmp_path, registry, load_mappings())
+    assert transactions.empty and vendors.empty           # not money-movement / vendors
+    assert len(cost_lines) == 3                            # subtotals + headers dropped
+    assert set(cost_lines["cost_code"]) == {"Framing", "Cabinets"}   # item forward-filled
+    assert set(cost_lines["vendor_name"]) == {"Lumber One", "Casa Blanca"}

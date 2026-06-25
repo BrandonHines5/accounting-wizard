@@ -22,11 +22,11 @@ def test_cli_runs_on_example_dataset(tmp_path, monkeypatch):
     wb = load_workbook(out)
     assert wb.sheetnames == ["Summary", "CRITICAL", "HIGH", "MEDIUM", "INFO",
                              "Methodology", "Run Info"]
-    # The sample exports raise these four findings (see examples/README.md).
+    # The sample exports raise these findings (see examples/README.md).
     found = set()
     for sheet in ("CRITICAL", "HIGH", "MEDIUM", "INFO"):
         found |= {row[0].value for row in wb[sheet].iter_rows(min_row=2) if row[0].value}
-    assert {"T1-04", "T1-10", "T1-11", "T1-30"} <= found
+    assert {"T1-04", "T1-10", "T1-11", "T1-20", "T1-30"} <= found
     # Methodology proves Tier 1, 2, and 4 rules are all registered (honest coverage).
     methodology = {row[0].value for row in wb["Methodology"].iter_rows(min_row=2)}
     assert {"T1-30", "T2-02", "T2-10", "T4-02"} <= methodology

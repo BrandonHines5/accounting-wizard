@@ -10,7 +10,6 @@ clean no-op. Thresholds live in config/rules.yaml.
 """
 from __future__ import annotations
 
-from analytics._common import PAYMENT_TYPES
 from analytics.baselines import KIND_VENDOR_SHARE
 from core.findings import Finding, Severity
 from rules.engine import RunContext, rule
@@ -41,9 +40,8 @@ def vendor_concentration_shift(ctx: RunContext):
     min_total = float(ctx.config.param("concentration_min_total"))
 
     for entity_id in ctx.active_entity_ids:
-        df = ctx.entity_transactions(entity_id)
-        df = df[df["txn_type"].isin(PAYMENT_TYPES)
-                & df["vendor_name"].notna() & df["cost_code"].notna()].copy()
+        df = ctx.entity_cost_lines(entity_id)
+        df = df[df["vendor_name"].notna() & df["cost_code"].notna()].copy()
         df["_amt"] = df["amount"].abs()
         for cost_code, grp in df.groupby("cost_code"):
             total = float(grp["_amt"].sum())

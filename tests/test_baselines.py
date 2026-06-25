@@ -18,8 +18,10 @@ def _txns(rows) -> pd.DataFrame:
 
 
 def _ctx(txns, baselines, registry, config) -> RunContext:
-    return RunContext(transactions=txns, vendors=pd.DataFrame(), registry=registry,
-                      config=config, baselines=baselines)
+    # T2-05 reads cost lines, not transactions.
+    return RunContext(transactions=pd.DataFrame(), vendors=pd.DataFrame(),
+                      registry=registry, config=config, baselines=baselines,
+                      cost_lines=txns)
 
 
 def _baseline_df(shares) -> pd.DataFrame:

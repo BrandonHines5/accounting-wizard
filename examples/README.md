@@ -12,14 +12,19 @@ python -m skill.run \
   --output output/example.xlsx
 ```
 
-Open `output/example.xlsx`. With these exports the battery raises four findings:
+Open `output/example.xlsx`. With these exports the battery raises five findings:
 
 | Rule | Severity | What it caught |
 |---|---|---|
 | **T1-04** | HIGH | Bright Electric paid twice within 7 days, each under the $5,000 approval threshold but summing above it (threshold splitting) |
 | **T1-10** | HIGH | "Acme Lumber LLC" and "Acme Lumber Co" — near-duplicate vendors sharing a phone and Tax ID |
 | **T1-11** | HIGH | QuickPour Concrete: an $8,000 first payment within days of the vendor being created |
+| **T1-20** | MEDIUM | Lumber One normally bills the "Framing" cost code but has one posting on "Doors - Exterior" (from `qb__purchases_by_item_detail`) |
 | **T1-30** | MEDIUM | A $1,200 credit memo to list for review |
+
+The cost-code rule (T1-20) reads `qb__purchases_by_item_detail.csv` — the
+item-coded job-cost lines, ingested as a separate "cost lines" source so they
+don't double-count against the transaction-level reports.
 
 Notes:
 - `--tier3 off` skips the Claude review layer (no API key needed); `--tier3 auto`

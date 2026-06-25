@@ -34,7 +34,7 @@ import pandas as pd
 import yaml
 
 from core.entities import REPO_ROOT, EntityRegistry
-from core.model import TRANSACTION_COLUMNS, VENDOR_COLUMNS
+from core.model import COST_LINE_COLUMNS, TRANSACTION_COLUMNS, VENDOR_COLUMNS
 
 DEFAULT_MAPPINGS_PATH = REPO_ROOT / "config" / "source_mappings.yaml"
 
@@ -218,10 +218,10 @@ def ingest_data_dir(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Walk data/<entity_id>/ and normalize every recognized export.
 
-    Returns (transactions, vendors) canonical frames (unvalidated).
+    Returns (transactions, vendors, cost_lines) canonical frames (unvalidated).
     Files whose stem doesn't match a mapping key are skipped with a notice.
     """
-    txn_frames, vendor_frames = [], []
+    txn_frames, vendor_frames, cost_line_frames = [], [], []
     known_ids = {e.id for e in registry}
     for entity_dir in sorted(p for p in data_dir.iterdir() if p.is_dir()):
         if entity_dir.name not in known_ids:
@@ -242,11 +242,18 @@ def ingest_data_dir(
             label = f"{entity_dir.name}/{file.name}"
             raw = apply_group_headers(read_report(file, mapping), mapping)
             source_system = key.split("__", 1)[0]
-            if mapping.get("kind") == "vendors":
+            kind = mapping.get("kind")
+            if kind == "vendors":
                 frame = normalize_frame(raw, mapping, entity_dir.name, source_system,
                                         VENDOR_COLUMNS, label=label)
                 frame = frame[frame["vendor_name"].notna()]
                 vendor_frames.append(frame)
+            elif kind == "cost_lines":
+                frame = normalize_frame(raw, mapping, entity_dir.name, source_system,
+                                        COST_LINE_COLUMNS, label=label)
+                frame = clean_transactions(frame, label=label)
+                frame = synthesize_source_ids(frame, key)
+                cost_line_frames.append(frame)
             else:
                 frame = normalize_frame(raw, mapping, entity_dir.name, source_system,
                                         TRANSACTION_COLUMNS, label=label)
@@ -259,4 +266,6 @@ def ingest_data_dir(
     vendors = (pd.concat(vendor_frames, ignore_index=True).drop_duplicates(
                    subset=["entity_id", "vendor_name"])
                if vendor_frames else pd.DataFrame(columns=VENDOR_COLUMNS))
-    return transactions, vendors
+    cost_lines = (pd.concat(cost_line_frames, ignore_index=True)
+                  if cost_line_frames else pd.DataFrame(columns=COST_LINE_COLUMNS))
+    return transactions, vendors, cost_lines

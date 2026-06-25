@@ -21,7 +21,7 @@ from pathlib import Path
 
 from core.config import RulesConfig
 from core.entities import REPO_ROOT, EntityRegistry
-from core.model import validate_transactions, validate_vendors
+from core.model import validate_cost_lines, validate_transactions, validate_vendors
 from ingest.normalize import ingest_data_dir, load_mappings
 from persistence import apply_disposition_memory
 from reporting.workbook import write_workbook
@@ -267,9 +267,10 @@ def main() -> None:
                          "(see skill/SKILL.md).")
 
     print(f"Ingesting exports from {data_dir} …")
-    transactions, vendors = ingest_data_dir(data_dir, registry, load_mappings())
+    transactions, vendors, cost_lines = ingest_data_dir(data_dir, registry, load_mappings())
     transactions = validate_transactions(transactions, known_ids)
     vendors = validate_vendors(vendors, known_ids)
+    cost_lines = validate_cost_lines(cost_lines, known_ids)
 
     if args.entity:
         unknown = set(args.entity) - known_ids
@@ -277,13 +278,17 @@ def main() -> None:
             raise SystemExit(f"Unknown entity id(s): {sorted(unknown)} — see config/entities.yaml")
         transactions = transactions[transactions["entity_id"].isin(args.entity)]
         vendors = vendors[vendors["entity_id"].isin(args.entity)]
+        cost_lines = cost_lines[cost_lines["entity_id"].isin(args.entity)]
 
     if args.since:
         transactions = transactions[transactions["date"] >= args.since]
+        cost_lines = cost_lines[cost_lines["date"] >= args.since]
     if args.until:
         transactions = transactions[transactions["date"] <= args.until]
+        cost_lines = cost_lines[cost_lines["date"] <= args.until]
 
-    print(f"  {len(transactions)} transactions, {len(vendors)} vendors across "
+    print(f"  {len(transactions)} transactions, {len(vendors)} vendors, "
+          f"{len(cost_lines)} cost lines across "
           f"{transactions['entity_id'].nunique()} entities"
           + (f" ({args.since or 'start'} → {args.until or 'latest'})"
              if args.since or args.until else ""))
@@ -305,7 +310,7 @@ def main() -> None:
 
     ctx = RunContext(transactions=transactions, vendors=vendors,
                      registry=registry, config=config, baselines=baselines,
-                     prior_vendors=prior_vendors)
+                     prior_vendors=prior_vendors, cost_lines=cost_lines)
     findings = run_all(ctx)
     print(f"  {len(findings)} Tier 1–2 rule findings")
 
@@ -337,7 +342,7 @@ def main() -> None:
     if args.update_baselines and args.store == "supabase":
         from analytics.baselines import vendor_share_baselines
         from persistence.baseline_store import BaselineStore
-        records = vendor_share_baselines(transactions, set(ctx.active_entity_ids))
+        records = vendor_share_baselines(cost_lines, set(ctx.active_entity_ids))
         print(f"  Updated {BaselineStore.from_env(args.supabase_schema).save(records)} "
               "Tier 2 baselines")
 

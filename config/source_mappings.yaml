@@ -13,10 +13,9 @@
 # columns:        canonical_column: "Export Header" (or _colN for unlabeled)
 # constants:      canonical_column: fixed value
 #
-# NOTE: no report currently maps `cost_code` (QB Item / job-phase). The rules that
-# key off it — T1-20 (vendor/cost-code mismatch) and T2-05 (vendor concentration
-# shift) — are implemented but dormant until a cost-code column is added to a
-# memorized report and mapped here.
+# `cost_code` (the QB Item name) comes from Purchases by Item Detail (kind:
+# cost_lines, below). It feeds T1-20 (vendor/cost-code mismatch) and T2-05 (vendor
+# concentration shift).
 
 # Vendor Transaction Detail is the canonical source for vendor money movement:
 # bills, bill payments, and direct checks each appear exactly once here.
@@ -89,6 +88,35 @@ qb__check_detail:
     account: "Account"
     amount: "Original Amount"
     check_no: "Num"
+
+# Purchases by Item Detail — the item-coded job-cost source. One row per item
+# line, carrying the Item (cost code, as a section header) and the vendor (Source
+# Name). Ingested as kind: cost_lines so its item lines never double-count against
+# Vendor Transaction Detail (the same bills appear there once, transaction-level).
+# Overhead that bypasses Items simply isn't in this report — correct, those costs
+# carry no cost_code. Feeds T1-20 (vendor/cost-code mismatch) and T2-05.
+# NOTE: the Item section header lands in "_col1" by analogy to vendor_transaction_
+# detail; confirm against the first real export and adjust the column if QB's
+# indent differs.
+qb__purchases_by_item_detail:
+  kind: cost_lines
+  group_headers:
+    - column: "_col1"          # the Item (cost code) appears on its own section row
+      as: "__cost_code"
+  txn_type_from:
+    column: "Type"
+    values:
+      "Bill": bill
+      "Check": check
+      "Item Receipt": item_receipt
+      "Credit": credit_memo
+  columns:
+    date: "Date"
+    vendor_name: "Source Name"
+    cost_code: "__cost_code"
+    qty: "Qty"
+    amount: "Amount"
+    memo: "Memo"
 
 # Vendor Contact List.
 # TODO: add "Date Created" (enables T1-11 new-vendor checks) and "Tax ID"
