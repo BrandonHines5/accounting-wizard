@@ -15,6 +15,7 @@ import pandas as pd
 from core.config import RulesConfig
 from core.entities import EntityRegistry
 from core.findings import Finding, apply_entity_severity_floor
+from core.model import COST_LINE_COLUMNS
 
 
 @dataclass
@@ -25,6 +26,7 @@ class RunContext:
     config: RulesConfig
     baselines: pd.DataFrame | None = None   # prior baselines (Tier 2); None until established
     prior_vendors: pd.DataFrame | None = None   # last-synced vendor master (T1-14 diffing)
+    cost_lines: pd.DataFrame | None = None  # item-coded job-cost lines (T1-20, T2-05)
 
     @property
     def active_entity_ids(self) -> list[str]:
@@ -32,6 +34,13 @@ class RunContext:
 
     def entity_transactions(self, entity_id: str) -> pd.DataFrame:
         return self.transactions[self.transactions["entity_id"] == entity_id]
+
+    def entity_cost_lines(self, entity_id: str) -> pd.DataFrame:
+        """Item-coded cost lines for one entity (columned empty frame when none
+        were ingested, so callers can filter columns without a KeyError)."""
+        if self.cost_lines is None:
+            return pd.DataFrame(columns=COST_LINE_COLUMNS)
+        return self.cost_lines[self.cost_lines["entity_id"] == entity_id]
 
 
 @dataclass

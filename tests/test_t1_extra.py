@@ -8,10 +8,11 @@ from rules.engine import RunContext
 from rules.vendor_master import vendor_bank_detail_change
 
 
-def _ctx(*, txns=None, vendors=None, prior_vendors=None, registry, config):
+def _ctx(*, txns=None, vendors=None, prior_vendors=None, cost_lines=None, registry, config):
     return RunContext(transactions=txns if txns is not None else pd.DataFrame(),
                       vendors=vendors if vendors is not None else pd.DataFrame(),
-                      registry=registry, config=config, prior_vendors=prior_vendors)
+                      registry=registry, config=config, prior_vendors=prior_vendors,
+                      cost_lines=cost_lines)
 
 
 def _txns(rows):
@@ -30,10 +31,10 @@ def _vendors(rows):
 # ---- T1-20 vendor/cost-code mismatch -------------------------------------------
 
 def test_t1_20_flags_stray_cost_code(registry, config):
-    rows = [("alpha", "check", "Framer", "06-100", f"F{i}") for i in range(4)]
-    rows.append(("alpha", "check", "Framer", "15-900", "STRAY"))
+    rows = [("alpha", "bill", "Framer", "06-100", f"F{i}") for i in range(4)]
+    rows.append(("alpha", "bill", "Framer", "15-900", "STRAY"))
     findings = list(vendor_costcode_mismatch(
-        _ctx(txns=_txns(rows), registry=registry, config=config)))
+        _ctx(cost_lines=_txns(rows), registry=registry, config=config)))
     assert len(findings) == 1
     f = findings[0]
     assert f.rule_id == "T1-20" and f.details["home_cost_code"] == "06-100"
@@ -41,10 +42,10 @@ def test_t1_20_flags_stray_cost_code(registry, config):
 
 
 def test_t1_20_no_dominant_code_no_flag(registry, config):
-    rows = [("alpha", "check", "Mixed", "06-100", "A"),
-            ("alpha", "check", "Mixed", "15-900", "B")]   # 1 each, no home code
+    rows = [("alpha", "bill", "Mixed", "06-100", "A"),
+            ("alpha", "bill", "Mixed", "15-900", "B")]   # 1 each, no home code
     assert list(vendor_costcode_mismatch(
-        _ctx(txns=_txns(rows), registry=registry, config=config))) == []
+        _ctx(cost_lines=_txns(rows), registry=registry, config=config))) == []
 
 
 # ---- T1-14 vendor bank-detail change -------------------------------------------

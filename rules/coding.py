@@ -150,14 +150,16 @@ def intercompany_imbalance(ctx: RunContext):
                 )
 
 
-@rule("T1-20", "Vendor/cost-code mismatch", requires="QB transactions (vendor + cost_code)")
+@rule("T1-20", "Vendor/cost-code mismatch",
+      requires="QB Purchases by Item Detail (vendor + cost_code item lines)")
 def vendor_costcode_mismatch(ctx: RunContext):
     """A vendor billed to a cost code outside its established pattern — the vendor
-    has a home code (used >= established_min times) and a rare stray on another."""
+    has a home code (used >= established_min times) and a rare stray on another.
+    Reads item-coded cost lines; a clean no-op until those are ingested."""
     established_min = int(ctx.config.param("vendor_costcode_established_min"))
     stray_max = int(ctx.config.param("vendor_costcode_stray_max"))
     for entity_id in ctx.active_entity_ids:
-        df = ctx.entity_transactions(entity_id)
+        df = ctx.entity_cost_lines(entity_id)
         df = df[df["vendor_name"].notna() & df["cost_code"].notna()]
         for vendor, grp in df.groupby("vendor_name"):
             counts = grp["cost_code"].astype(str).value_counts()

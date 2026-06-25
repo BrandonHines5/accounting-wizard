@@ -13,22 +13,20 @@ from __future__ import annotations
 
 import pandas as pd
 
-from analytics._common import PAYMENT_TYPES
-
 KIND_VENDOR_SHARE = "vendor_cost_code_share"
 
 
-def vendor_share_baselines(transactions: pd.DataFrame, active_ids: set[str],
+def vendor_share_baselines(cost_lines: pd.DataFrame, active_ids: set[str],
                            *, min_total: float = 0.0) -> list[dict]:
     """One baseline record per (entity, cost_code): each vendor's fraction of the
-    spend on that cost code. Records map directly to the baselines table."""
+    spend on that cost code, computed over the item-coded cost lines. Records map
+    directly to the baselines table."""
     records: list[dict] = []
     for entity_id in sorted(active_ids):
-        df = transactions[
-            (transactions["entity_id"] == entity_id)
-            & transactions["txn_type"].isin(PAYMENT_TYPES)
-            & transactions["vendor_name"].notna()
-            & transactions["cost_code"].notna()
+        df = cost_lines[
+            (cost_lines["entity_id"] == entity_id)
+            & cost_lines["vendor_name"].notna()
+            & cost_lines["cost_code"].notna()
         ].copy()
         df["_amt"] = df["amount"].abs()
         for cost_code, grp in df.groupby("cost_code"):
