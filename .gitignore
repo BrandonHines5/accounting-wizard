@@ -21,8 +21,10 @@ output/
 *.webp
 *.heic
 
-# Synthetic test fixtures are safe and explicitly re-included
+# Synthetic test fixtures + the runnable example dataset are safe (fictional
+# data) and explicitly re-included
 !tests/fixtures/*.csv
+!examples/**/*.csv
 
 # Placeholder README + per-entity drop folders exist in fresh clones,
 # but every real file dropped inside them stays ignored

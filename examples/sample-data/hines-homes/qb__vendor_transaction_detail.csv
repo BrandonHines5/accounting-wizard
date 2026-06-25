@@ -1,0 +1,17 @@
+Hines Homes LLC,,,,,,,
+Vendor Transaction Detail — May 2026,,,,,,,
+,,Type,Date,Num,Split,Amount,Memo
+,Acme Lumber LLC,,,,,,
+,,Bill,2026-05-01,INV-100,06-100 Framing,1000.00,framing
+,,Bill Pmt -Check,2026-05-03,2001,Checking,1000.00,
+,Total Acme Lumber LLC,,,,,,
+,Bright Electric,,,,,,
+,,Bill,2026-05-05,INV-77,16-100 Electrical,3000.00,rough-in
+,,Bill Pmt -Check,2026-05-06,2003,Checking,3000.00,
+,,Bill,2026-05-10,INV-90,16-100 Electrical,3000.00,trim
+,,Bill Pmt -Check,2026-05-12,2009,Checking,3000.00,
+,Total Bright Electric,,,,,,
+,QuickPour Concrete,,,,,,
+,,Bill,2026-05-08,INV-555,03-300 Flatwork,8000.00,driveway
+,,Bill Pmt -Check,2026-05-09,2008,Checking,8000.00,
+,Total QuickPour Concrete,,,,,,
