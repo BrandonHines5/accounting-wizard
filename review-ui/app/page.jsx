@@ -128,8 +128,12 @@ function Dashboard({ supabase, session }) {
     if (reviewErr) setError(reviewErr.message || String(reviewErr));
   }
 
-  const visible = (findings || []).filter((f) => showResolved || f.disposition === "open");
+  // "Cleared" = closed (legit / error_corrected). Escalated is NOT cleared — it
+  // stays active and visible, because escalating means it needs MORE attention.
+  const isCleared = (f) => f.disposition === "legit" || f.disposition === "error_corrected";
+  const visible = (findings || []).filter((f) => showResolved || !isCleared(f));
   const openCount = (findings || []).filter((f) => f.disposition === "open").length;
+  const escalatedCount = (findings || []).filter((f) => f.disposition === "escalated").length;
   // Known severities first, then any unexpected ones, so nothing is counted-but-hidden.
   const severityGroups = [
     ...SEVERITIES,
@@ -165,18 +169,21 @@ function Dashboard({ supabase, session }) {
         <>
           <div className="summary">
             <div className="kpi"><b>{openCount}</b><span>open</span></div>
+            {escalatedCount > 0 && (
+              <div className="kpi"><b>{escalatedCount}</b><span>escalated</span></div>
+            )}
             <div className="kpi"><b>{findings.length}</b><span>total</span></div>
             <div className="spacer" />
             <label className="row muted" style={{ fontSize: 13 }}>
               <input type="checkbox" checked={showResolved}
-                onChange={(e) => setShowResolved(e.target.checked)} /> show resolved
+                onChange={(e) => setShowResolved(e.target.checked)} /> show cleared
             </label>
             <button className="link" onClick={load}>Refresh</button>
           </div>
 
           {visible.length === 0 && (
             <div className="card muted">
-              No {showResolved ? "" : "open "}findings. They appear here after a run with
+              No {showResolved ? "" : "active "}findings. They appear here after a run with
               <code> --store supabase</code>.
             </div>
           )}
@@ -207,14 +214,17 @@ function FindingCard({ f, onDisposition, locked }) {
   const details = f.details && typeof f.details === "object" ? f.details : {};
   const detailEntries = Object.entries(details).filter(
     ([k, v]) => !HIDE_KEYS.has(k) && v !== null && v !== "");
-  const resolved = f.disposition !== "open";
+  const dispositioned = f.disposition !== "open";
+  // Only legit / error_corrected are "cleared" (dim + hidden by default). Escalated
+  // stays active: full opacity, still actionable, just badged as escalated.
+  const cleared = f.disposition === "legit" || f.disposition === "error_corrected";
   return (
-    <div className={`card ${resolved ? "resolved" : ""}`}>
+    <div className={`card ${cleared ? "resolved" : ""}`}>
       <div className="row">
         <span className={`badge sev-${f.severity}`}>{f.severity}</span>
         <span className="rule">{f.rule_id}</span>
         <span className="muted" style={{ fontSize: 12 }}>{(f.entity_ids || []).join(", ")}</span>
-        {!resolved && f.ai_updated_at && (
+        {!cleared && f.ai_updated_at && (
           <span className="tag-updated">updated from your feedback</span>
         )}
         <div className="spacer" />
@@ -236,18 +246,18 @@ function FindingCard({ f, onDisposition, locked }) {
         <div className="meta">txns: {f.transaction_refs.join(", ")}</div>
       )}
       {f.ai_assessment && <div className="ai">{f.ai_assessment}</div>}
-      {!resolved && f.suggested_disposition && (
+      {f.disposition === "open" && f.suggested_disposition && (
         <div className="suggest">
           AI suggests: <b>{DISP_LABEL[f.suggested_disposition] || f.suggested_disposition}</b>
         </div>
       )}
-      {resolved && f.disposition_note && (
+      {dispositioned && f.disposition_note && (
         <div className="reason-shown">
           <span className="muted">your reason:</span> {f.disposition_note}
         </div>
       )}
 
-      {!resolved && (
+      {!cleared && (
         <textarea className="reason" rows={2} value={note} disabled={f._busy || locked}
           onChange={(e) => setNote(e.target.value)}
           placeholder="Why? (optional — the AI uses your reason to re-check the other open items)" />
@@ -260,7 +270,7 @@ function FindingCard({ f, onDisposition, locked }) {
             {d.label}
           </button>
         ))}
-        {resolved && (
+        {dispositioned && (
           <button className="link" disabled={f._busy || locked}
             onClick={() => onDisposition(f.fingerprint, "open", "")}>Reopen</button>
         )}

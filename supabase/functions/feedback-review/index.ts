@@ -2,14 +2,16 @@
 // every still-OPEN finding in light of the accumulated human feedback and update it
 // as needed. Invoked by the review UI after each dispositioned-with-note action.
 //
+// financial_forensics is not exposed to PostgREST, so this function reaches it only
+// through public SECURITY DEFINER RPCs (feedback_corpus / open_findings_for_review /
+// apply_feedback_update), all service_role-only.
+//
 // Guardrails (CLAUDE.md hard rules):
 //   - Never sets `disposition` (only `suggested_disposition`) — the human decides.
 //   - Never mutates `severity`. Severity floors (vendor bank-detail = CRITICAL until
 //     callback-verified; nonprofit misallocation >= HIGH) are deterministic and owned
-//     by the offline Tier 3 / rules layer, which has the entity registry. This
-//     interactive nudge only updates the assessment + a suggested disposition, so it
-//     can never downgrade a finding past a floor. It may note a severity concern in
-//     ai_assessment, but the badge only changes through the governed pipeline.
+//     by the rules / offline Tier 3 layer. apply_feedback_update only writes
+//     ai_assessment + suggested_disposition, so it can't downgrade past a floor.
 //   - Only updates OPEN findings, and only those the feedback genuinely bears on.
 //   - A missing ANTHROPIC_API_KEY is a misconfiguration: returns 503, not a silent
 //     no-op. The disposition + reason are already saved by set_finding_disposition
@@ -17,13 +19,12 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
-const SCHEMA = "financial_forensics";
 const MODEL = Deno.env.get("ANTHROPIC_MODEL") || "claude-sonnet-4-6";
 const TIMEOUT_MS = 60_000;
 
 // Defense-in-depth egress guard for the no-raw-bank-numbers hard rule: the RPC
-// redacts disposition_note at write time, but this function is the external egress
-// to Anthropic, so scrub long digit runs (incl. space/hyphen-separated) again here —
+// redacts disposition_note at write time, but this is the external egress to
+// Anthropic, so scrub long digit runs (incl. space/hyphen-separated) again here —
 // covering legacy rows or any out-of-band writes that bypassed the RPC.
 const redactDigits = (s: string | null) =>
   s ? s.replace(/\d([ -]?\d){6,}/g, "[redacted]") : s;
@@ -44,15 +45,14 @@ Deno.serve(async (req) => {
   try {
     const url = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const ff = createClient(url, serviceKey, { db: { schema: SCHEMA } });
-    const pub = createClient(url, serviceKey, { db: { schema: "public" } });
+    const admin = createClient(url, serviceKey);
 
     // Authz: the caller must be an allowlisted reviewer (same gate as the RPCs).
     const token = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
-    const { data: userData, error: userErr } = await ff.auth.getUser(token);
+    const { data: userData, error: userErr } = await admin.auth.getUser(token);
     const email = userData?.user?.email?.toLowerCase();
     if (userErr || !email) return json({ error: "unauthenticated" }, 401);
-    const { data: allow, error: allowErr } = await pub
+    const { data: allow, error: allowErr } = await admin
       .from("review_allowlist").select("email").eq("email", email).maybeSingle();
     if (allowErr) return json({ error: "allowlist_lookup_failed", detail: allowErr.message }, 500);
     if (!allow) return json({ error: "not authorized" }, 403);
@@ -61,16 +61,12 @@ Deno.serve(async (req) => {
     // A missing key is a server misconfiguration, not a successful no-op — surface it.
     if (!apiKey) return json({ error: "anthropic_api_key_not_configured" }, 503);
 
-    // The human feedback corpus (dispositioned findings that carry a reason) and
-    // the still-open findings to re-review against it. Propagate query errors
-    // rather than masking a DB/permission failure as "nothing to do".
-    const { data: feedback, error: fbErr } = await ff.from("findings")
-      .select("rule_id,severity,question,disposition,disposition_note,entity_ids")
-      .neq("disposition", "open").not("disposition_note", "is", null);
+    // The human feedback corpus (dispositioned findings that carry a reason) and the
+    // still-open findings to re-review against it, via the public RPCs. Propagate
+    // errors rather than masking a DB/permission failure as "nothing to do".
+    const { data: feedback, error: fbErr } = await admin.rpc("feedback_corpus");
     if (fbErr) return json({ error: "feedback_query_failed", detail: fbErr.message }, 500);
-    const { data: open, error: openErr } = await ff.from("findings")
-      .select("fingerprint,rule_id,severity,question,details,entity_ids,ai_assessment")
-      .eq("disposition", "open");
+    const { data: open, error: openErr } = await admin.rpc("open_findings_for_review");
     if (openErr) return json({ error: "open_query_failed", detail: openErr.message }, 500);
 
     if (!open?.length) return json({ updated: 0, open: 0 });
@@ -118,10 +114,10 @@ Deno.serve(async (req) => {
     };
 
     const payload = {
-      reviewer_feedback: feedback.map((f) => ({
+      reviewer_feedback: feedback.map((f: any) => ({
         ...f, disposition_note: redactDigits(f.disposition_note),
       })),
-      open_findings: open.map((f) => ({
+      open_findings: open.map((f: any) => ({
         fingerprint: f.fingerprint, rule_id: f.rule_id, severity: f.severity,
         question: f.question, details: f.details, entity_ids: f.entity_ids,
       })),
@@ -165,23 +161,22 @@ Deno.serve(async (req) => {
     const toolUse = (result.content || []).find((c: any) => c.type === "tool_use");
     const updates: any[] = toolUse?.input?.updates ?? [];
 
-    const openByFp = new Map(open.map((f) => [f.fingerprint, f]));
-    const now = new Date().toISOString();
+    const openByFp = new Map(open.map((f: any) => [f.fingerprint, f]));
     let applied = 0;
     const seen = new Set<string>();
     const failures: { fingerprint: string; error: string }[] = [];
     for (const u of updates) {
-      const cur = openByFp.get(u?.fingerprint);
-      if (!cur || !u.ai_assessment?.trim() || seen.has(u.fingerprint)) continue;
-      seen.add(u.fingerprint);                               // dedupe repeated AI entries
-      const { data: updated, error } = await ff.from("findings").update({
-        ai_assessment: u.ai_assessment,
-        suggested_disposition: u.suggested_disposition ?? null,
-        ai_updated_at: now,
-      }).eq("fingerprint", u.fingerprint).eq("disposition", "open")
-        .select("fingerprint").maybeSingle();
+      if (!openByFp.get(u?.fingerprint) || !u.ai_assessment?.trim() || seen.has(u.fingerprint)) {
+        continue;                                            // skip unknown / empty / dupes
+      }
+      seen.add(u.fingerprint);
+      const { data: updatedFp, error } = await admin.rpc("apply_feedback_update", {
+        p_fingerprint: u.fingerprint,
+        p_ai_assessment: u.ai_assessment,
+        p_suggested_disposition: u.suggested_disposition ?? null,
+      });
       if (error) failures.push({ fingerprint: u.fingerprint, error: error.message });
-      else if (updated) applied++;                           // count only rows actually updated
+      else if (updatedFp) applied++;                         // rpc returns fp, or null if no open row
     }
     return json({ updated: applied, considered: open.length,
                   ...(failures.length ? { failures } : {}) });
