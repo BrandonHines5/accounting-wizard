@@ -1,7 +1,7 @@
 """Billing & payments rules (T1-01 … T1-08).
 
-Implemented here: T1-01, T1-02, T1-04, T1-07 — these run on QB data alone.
-T1-03/05/06/08 need Adaptive/Buildertrend ingest and are declared pending.
+Implemented here: T1-01, T1-02, T1-04, T1-07, T1-08 — these run on QB data alone.
+T1-03/05/06 need Adaptive/Buildertrend ingest and are declared pending.
 
 Amounts are evaluated as absolute values: QB exports disbursements as
 negatives, bills as positives.
@@ -186,9 +186,40 @@ def payment_outside_ap_run(ctx: RunContext):
             )
 
 
+@rule("T1-08", "Manual check on AP vendor",
+      requires="QB Vendor Transaction Detail (bill-payment history)")
+def manual_check_on_ap_vendor(ctx: RunContext):
+    """A vendor normally paid through the AP bill workflow (bill_payment) that also
+    receives a direct manual check — a workflow/approval bypass. The QB bill-payment
+    history is the AP-vendor proxy (>= established_min bill payments), so this runs
+    without the Adaptive vendor-workflow map."""
+    established_min = int(ctx.config.param("ap_vendor_established_min"))
+    for entity_id in ctx.active_entity_ids:
+        pay = _payments(ctx, entity_id, AP_TYPES)
+        for vendor, grp in pay.groupby("vendor_name"):
+            bill_pmts = int((grp["txn_type"] == "bill_payment").sum())
+            direct_checks = grp[grp["txn_type"] == "check"]
+            if bill_pmts < established_min or direct_checks.empty:
+                continue
+            for _, row in direct_checks.iterrows():
+                yield Finding(
+                    rule_id="T1-08",
+                    severity=Severity.HIGH,
+                    entity_ids=[entity_id],
+                    question=(
+                        f"{vendor} is normally paid through the AP bill workflow "
+                        f"({bill_pmts} bill payments) but received a direct manual check of "
+                        f"${row['amount']:,.2f} on {row['date'].date()}. Why was the approval "
+                        "workflow bypassed?"
+                    ),
+                    details={"vendor": vendor, "amount": float(row["amount"]),
+                             "check_no": row["check_no"]},
+                    transactions=[str(row["source_id"])],
+                )
+
+
 pending_rule("T1-03", "Approval bypass", requires="QB + Adaptive bills/approvals export",
              notes="Needs Adaptive ingest (ingest/adaptive.py).")
 pending_rule("T1-05", "Bill exceeds PO", requires="Adaptive/BT POs + QB",
              notes="Needs PO ingest.")
 pending_rule("T1-06", "Missing PO", requires="Adaptive/BT + QB + PO-required cost-code list")
-pending_rule("T1-08", "Manual check on AP vendor", requires="QB + Adaptive vendor-workflow map")

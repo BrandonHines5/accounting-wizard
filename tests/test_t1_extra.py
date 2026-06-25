@@ -2,6 +2,7 @@
 code mismatch) and T1-14 (vendor bank-detail change)."""
 import pandas as pd
 
+from rules.billing import manual_check_on_ap_vendor
 from rules.coding import vendor_costcode_mismatch
 from rules.engine import RunContext
 from rules.vendor_master import vendor_bank_detail_change
@@ -78,3 +79,29 @@ def test_t1_14_distinct_changes_distinct_fingerprints(registry, config):
         _ctx(vendors=cur, prior_vendors=prior, registry=registry, config=config)))
     assert len(findings) == 2
     assert len({f.fingerprint() for f in findings}) == 2
+
+
+# ---- T1-08 manual check on AP vendor -------------------------------------------
+
+def _pay_txns(rows):
+    df = pd.DataFrame(rows, columns=["entity_id", "txn_type", "vendor_name",
+                                     "amount", "source_id", "date"])
+    df["date"] = pd.to_datetime(df["date"])
+    df["check_no"] = ""           # canonical transactions always carry this column
+    return df
+
+
+def test_t1_08_flags_manual_check_on_ap_vendor(registry, config):
+    rows = [("alpha", "bill_payment", "AP Sub", 1000.0, f"BP{i}", "2026-05-01") for i in range(3)]
+    rows.append(("alpha", "check", "AP Sub", 4000.0, "MANUAL", "2026-05-09"))
+    findings = list(manual_check_on_ap_vendor(
+        _ctx(txns=_pay_txns(rows), registry=registry, config=config)))
+    assert len(findings) == 1
+    assert findings[0].rule_id == "T1-08" and str(findings[0].severity) == "HIGH"
+    assert findings[0].transactions == ["MANUAL"] and findings[0].details["vendor"] == "AP Sub"
+
+
+def test_t1_08_check_only_vendor_not_flagged(registry, config):
+    rows = [("alpha", "check", "Cash Sub", 500.0, f"C{i}", "2026-05-01") for i in range(4)]
+    assert list(manual_check_on_ap_vendor(
+        _ctx(txns=_pay_txns(rows), registry=registry, config=config))) == []

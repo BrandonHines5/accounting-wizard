@@ -10,6 +10,10 @@ defaults:
   fuzzy_dup_amount_tolerance: 1.00
   fuzzy_dup_window_days: 60
 
+  # T1-08: a vendor with at least this many bill payments is "AP-workflow";
+  # a direct manual check to them is then flagged as a workflow bypass.
+  ap_vendor_established_min: 3
+
   # T1-07: weekdays AP batches normally run (0=Mon … 6=Sun).
   # Empty = rule disabled. Hines data shows Wednesday-dominant cadence
   # (~60%) — set to [2] only if strict batch days become policy.
