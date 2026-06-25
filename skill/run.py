@@ -25,7 +25,8 @@ from core.model import validate_transactions, validate_vendors
 from ingest.normalize import ingest_data_dir, load_mappings
 from persistence import apply_disposition_memory
 from reporting.workbook import write_workbook
-import rules  # noqa: F401  — registers all rule modules
+import rules  # noqa: F401  — registers all Tier 1 rule modules
+import analytics  # noqa: F401  — registers all Tier 2 statistical rules
 from rules.engine import RunContext, run_all
 from tier3 import HeuristicJudge, apply_tier3, build_packets
 
@@ -263,7 +264,7 @@ def main() -> None:
     ctx = RunContext(transactions=transactions, vendors=vendors,
                      registry=registry, config=config)
     findings = run_all(ctx)
-    print(f"  {len(findings)} Tier 1 findings")
+    print(f"  {len(findings)} Tier 1–2 rule findings")
 
     findings += _run_tier4(args, registry, config, transactions, known_ids)
 

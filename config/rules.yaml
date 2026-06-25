@@ -41,6 +41,15 @@ defaults:
   # Tier 4 check-image vision reads (T4-03/04/05)
   check_image_min_confidence: 90   # read confidence (0–100) below this → human review queue
 
+  # Tier 2 statistical checks
+  round_number_base: 100           # T2-02: "round" = an exact multiple of this dollar amount
+  round_number_min_count: 12       # T2-02: min payments before the round ratio is meaningful
+  round_number_ratio: 0.6          # T2-02: flag when at least this fraction are round
+  benford_min_count: 40            # T2-02: min sample to test first-digit distribution
+  benford_chi2_critical: 20.09     # T2-02: chi-square df=8 critical value (~p<0.01)
+  payment_timing_min_payments: 6   # T2-10: min payments to assess a vendor's cadence
+  payment_timing_mad_z: 3.5        # T2-10: robust (MAD) modified z-score outlier threshold
+
 # Account-name pattern that identifies inter-company GL accounts, e.g.
 # "Due from Beta", "1920 · Loan to 13525WM, LLC". Group 1 = kind (due|loan),
 # group 2 = direction (to|from), group 3 = counterparty name resolved against

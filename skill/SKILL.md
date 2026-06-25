@@ -1,18 +1,20 @@
 ---
 name: financial-forensics
-description: Weekly forensic accounting run over all operated entities — ingest export drops, run the Tier 1 detection battery, and produce a severity-ranked exceptions workbook. Use when the weekly QB/Adaptive/Buildertrend exports have been dropped in data/, or when asked to run/check the financial forensics battery.
+description: Weekly forensic accounting run over all operated entities — ingest export drops, run the Tier 1–2 detection battery (deterministic rules + statistical anomalies) and optional Tier 4 bank reconciliation, and produce a severity-ranked exceptions workbook. Use when the weekly QB/Adaptive/Buildertrend exports have been dropped in data/, or when asked to run/check the financial forensics battery.
 ---
 
 # Financial Forensics — weekly run
 
 ## What this does
 
-Runs the Tier 1 deterministic rule battery (see `DETECTION_SPEC.md`) over every
-**active entity in `config/entities.yaml`**, optionally reconciles bank statements
-(**Tier 4**) when they're configured, passes each finding through the Tier 3 AI
-judgment layer, and writes a severity-ranked, multi-sheet exceptions workbook to
-`output/`. Entities are registry-driven: onboarding a new entity = add it to the
-registry and drop its exports — never edit rule code.
+Runs the Tier 1 deterministic rule battery plus the Tier 2 statistical checks
+(Benford/round-number T2-02, payment-timing T2-10 — more land as their feeds are
+ingested) over every **active entity in `config/entities.yaml`**, optionally
+reconciles bank statements (**Tier 4**) when they're configured, passes each
+finding through the Tier 3 AI judgment layer, and writes a severity-ranked,
+multi-sheet exceptions workbook to `output/`. Entities are registry-driven:
+onboarding a new entity = add it to the registry and drop its exports — never
+edit rule code.
 
 The **Tier 3 layer** (`tier3/`) reviews every flag before it reaches the human
 disposition session: for each finding Claude gets the transaction(s), vendor
