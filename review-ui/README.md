@@ -8,8 +8,7 @@ from any PC, deployed to Vercel.
 the Supabase URL + anon key are baked in as public-by-design defaults.)
 
 - **Auth:** Microsoft (Microsoft Entra / Azure) sign-in via Supabase OAuth — same as
-  our other sites. Email magic-link / 6-digit code is kept as a hidden fallback
-  ("Use email instead") so no one is locked out before the Azure provider is wired up.
+  our other sites. It is the only sign-in method; there is no email/password fallback.
 - **Authorization (admin-only):** signing in is not the same as access. Only addresses
   in `public.review_allowlist` can read findings or set dispositions — both the
   `list_findings()` read path and the `set_finding_disposition()` write path are gated
@@ -60,14 +59,12 @@ These are project settings, done once. Links use this project
 
 ### 2. Point auth URLs at the deployed app
 A new Supabase project's **Site URL** defaults to `http://localhost:3000`, so the
-OAuth redirect (and magic links) bounce to localhost ("refused to connect") instead
-of the live app. **Authentication → URL Configuration**
+OAuth redirect bounces to localhost ("refused to connect") instead of the live app.
+**Authentication → URL Configuration**
 (https://supabase.com/dashboard/project/wxzvboiymeyavebxkorh/auth/url-configuration):
 
 - **Site URL:** `https://accounting-wizard.vercel.app`
 - **Redirect URLs:** add `https://accounting-wizard.vercel.app/**`
   (keep `http://localhost:3000/**` if you also run it locally).
 
-After both steps, "Continue with Microsoft" works from any PC. The email fallback
-(under "Use email instead") also needs step 2; its 6-digit code additionally needs
-`{{ .Token }}` in the **Magic Link** email template.
+After both steps, "Continue with Microsoft" works from any PC.
