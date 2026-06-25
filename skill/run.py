@@ -27,6 +27,7 @@ from persistence import apply_disposition_memory
 from reporting.workbook import write_workbook
 import rules  # noqa: F401  — registers all Tier 1 rule modules
 import analytics  # noqa: F401  — registers all Tier 2 statistical rules
+import bank.methodology  # noqa: F401  — lists Tier 4 on the Methodology sheet
 from rules.engine import RunContext, run_all
 from tier3 import HeuristicJudge, apply_tier3, build_packets
 

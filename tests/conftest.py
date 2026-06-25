@@ -12,6 +12,7 @@ from core.entities import EntityRegistry       # noqa: E402
 from core.model import validate_transactions, validate_vendors  # noqa: E402
 import rules                                   # noqa: E402, F401
 import analytics                               # noqa: E402, F401 — registers Tier 2 rules
+import bank.methodology                        # noqa: E402, F401 — lists Tier 4 in Methodology
 from rules.engine import RunContext            # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"

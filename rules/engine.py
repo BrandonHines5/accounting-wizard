@@ -57,6 +57,14 @@ def pending_rule(rule_id: str, title: str, requires: str, notes: str = ""):
     _RULES[rule_id] = RuleSpec(rule_id, title, False, requires, None, notes)
 
 
+def external_rule(rule_id: str, title: str, requires: str,
+                  implemented: bool = True, notes: str = ""):
+    """Declare a rule implemented OUTSIDE the engine (e.g. Tier 4 reconciliation,
+    which needs bank data). It is listed on the Methodology sheet for honest
+    coverage but never executed by run_all (func is None)."""
+    _RULES[rule_id] = RuleSpec(rule_id, title, implemented, requires, None, notes)
+
+
 def all_rules() -> list[RuleSpec]:
     return sorted(_RULES.values(), key=lambda r: r.rule_id)
 
@@ -65,7 +73,7 @@ def run_all(ctx: RunContext) -> list[Finding]:
     entities_by_id = {e.id: e for e in ctx.registry}
     findings: list[Finding] = []
     for spec in all_rules():
-        if not spec.implemented:
+        if not spec.implemented or spec.func is None:    # pending or external-flow
             continue
         for finding in spec.func(ctx):
             findings.append(apply_entity_severity_floor(finding, entities_by_id))
