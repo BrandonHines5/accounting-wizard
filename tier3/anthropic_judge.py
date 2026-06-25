@@ -20,7 +20,11 @@ from core.findings import Severity
 from tier3.context import JudgmentPacket
 from tier3.judge import Judge, Tier3Assessment, _failed_assessment, coerce_severity
 
-MODEL = "claude-opus-4-8"
+# Tier 3 triages findings the deterministic tiers already detected (is this a
+# likely duplicate? what's the benign explanation?), so Sonnet handles it well
+# while keeping large weekly batches fast and cheap. Override per run with
+# --tier3-model (e.g. Opus) for a deep re-review of a specific batch.
+MODEL = "claude-sonnet-4-6"
 
 # Tier 3 calls are independent and network-bound, so the weekly batch fans them
 # out across a small thread pool rather than one-at-a-time -- dozens of findings on
