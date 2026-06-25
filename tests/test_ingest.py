@@ -83,6 +83,20 @@ def test_ensure_unique_source_ids_suffixes_split_lines():
     assert not out.duplicated(["entity_id", "source_system", "source_id"]).any()
 
 
+def test_ensure_unique_source_ids_avoids_pre_suffixed_collision():
+    # A real id that already looks like "<base>#2" must not be re-minted: a naive
+    # rank+1 scheme would rewrite the 2nd "75256" to "75256#2" and collide with
+    # the existing one. The allocator skips taken suffixes instead.
+    df = pd.DataFrame({
+        "entity_id": ["alpha", "alpha", "alpha"],
+        "source_system": ["qb", "qb", "qb"],
+        "source_id": ["75256", "75256", "75256#2"],
+    })
+    out = ensure_unique_source_ids(df)
+    assert out["source_id"].tolist() == ["75256", "75256#3", "75256#2"]
+    assert not out.duplicated(["entity_id", "source_system", "source_id"]).any()
+
+
 def test_ensure_unique_source_ids_noop_when_already_unique():
     df = pd.DataFrame({
         "entity_id": ["alpha", "alpha"],

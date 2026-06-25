@@ -231,8 +231,21 @@ def ensure_unique_source_ids(df: pd.DataFrame) -> pd.DataFrame:
     if not (rank > 0).any():
         return df
     df = df.copy()
-    suffixed = df["source_id"].astype(str) + "#" + (rank + 1).astype(str)
-    df["source_id"] = df["source_id"].mask(rank > 0, suffixed)
+    df["source_id"] = df["source_id"].astype(str)
+    # Seed with every key already in the frame so a suffix we mint never lands on
+    # an id that exists elsewhere — e.g. a real id that already looks like
+    # "<base>#2" would make a naive rank+1 scheme re-collide. Allocate the next
+    # unused "#n" per (entity, source, base) instead.
+    taken = set(zip(df["entity_id"], df["source_system"], df["source_id"]))
+    for idx in rank[rank > 0].index:
+        entity = df.at[idx, "entity_id"]
+        system = df.at[idx, "source_system"]
+        base = df.at[idx, "source_id"]
+        n = 2
+        while (entity, system, f"{base}#{n}") in taken:
+            n += 1
+        df.at[idx, "source_id"] = f"{base}#{n}"
+        taken.add((entity, system, f"{base}#{n}"))
     return df
 
 
