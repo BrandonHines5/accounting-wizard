@@ -224,10 +224,11 @@ def test_anthropic_judge_assess_all_concurrent_preserves_order_and_isolates_erro
     assert len(subset) > 1                       # exercise the threaded path
     judge = _StubJudge(client=object())          # injected; stub assess never uses it
     packets = build_packets(subset, ctx)
+    assert any(p.finding.rule_id == "T1-24" for p in packets)  # error path is exercised
     out = judge.assess_all(packets)
 
     assert len(out) == len(packets)
-    for packet, assessment in zip(packets, out):
+    for packet, assessment in zip(packets, out, strict=True):
         if packet.finding.rule_id == "T1-24":
             assert "unavailable" in assessment.assessment      # degraded, not dropped
         else:
