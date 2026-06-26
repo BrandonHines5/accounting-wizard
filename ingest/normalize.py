@@ -260,6 +260,7 @@ def ingest_data_dir(
     Files whose stem doesn't match a mapping key are skipped with a notice.
     """
     txn_frames, vendor_frames, cost_line_frames = [], [], []
+    skipped: list[str] = []
     known_ids = {e.id for e in registry}
     for entity_dir in sorted(p for p in data_dir.iterdir() if p.is_dir()):
         if entity_dir.name not in known_ids:
@@ -278,27 +279,40 @@ def ingest_data_dir(
                       f"({mapping.get('notes', 'see source_mappings.yaml')})")
                 continue
             label = f"{entity_dir.name}/{file.name}"
-            raw = apply_group_headers(read_report(file, mapping), mapping)
-            source_system = key.split("__", 1)[0]
-            kind = mapping.get("kind")
-            if kind == "vendors":
-                frame = normalize_frame(raw, mapping, entity_dir.name, source_system,
-                                        VENDOR_COLUMNS, label=label)
-                frame = frame[frame["vendor_name"].notna()]
-                vendor_frames.append(frame)
-            elif kind == "cost_lines":
-                frame = normalize_frame(raw, mapping, entity_dir.name, source_system,
-                                        COST_LINE_COLUMNS, label=label)
-                frame = clean_transactions(frame, label=label)
-                frame = synthesize_source_ids(frame, key)
-                cost_line_frames.append(frame)
-            else:
-                frame = normalize_frame(raw, mapping, entity_dir.name, source_system,
-                                        TRANSACTION_COLUMNS, label=label)
-                frame = clean_transactions(frame, label=label)
-                frame = synthesize_source_ids(frame, key)
-                frame["_priority"] = mapping.get("priority", 0)
-                txn_frames.append(frame)
+            try:
+                raw = apply_group_headers(read_report(file, mapping), mapping)
+                source_system = key.split("__", 1)[0]
+                kind = mapping.get("kind")
+                if kind == "vendors":
+                    frame = normalize_frame(raw, mapping, entity_dir.name, source_system,
+                                            VENDOR_COLUMNS, label=label)
+                    frame = frame[frame["vendor_name"].notna()]
+                    vendor_frames.append(frame)
+                elif kind == "cost_lines":
+                    frame = normalize_frame(raw, mapping, entity_dir.name, source_system,
+                                            COST_LINE_COLUMNS, label=label)
+                    frame = clean_transactions(frame, label=label)
+                    frame = synthesize_source_ids(frame, key)
+                    cost_line_frames.append(frame)
+                else:
+                    frame = normalize_frame(raw, mapping, entity_dir.name, source_system,
+                                            TRANSACTION_COLUMNS, label=label)
+                    frame = clean_transactions(frame, label=label)
+                    frame = synthesize_source_ids(frame, key)
+                    frame["_priority"] = mapping.get("priority", 0)
+                    txn_frames.append(frame)
+            except Exception as exc:  # noqa: BLE001 — one unreadable export must not abort the batch
+                # e.g. a QuickBooks Online export whose columns differ from the
+                # mapping. Log loudly and skip so the other entities still run; the
+                # skipped sources are summarized below (never silently dropped).
+                print(f"  ✗ {label}: SKIPPED — {exc}")
+                skipped.append(label)
+    if skipped:
+        print(f"  ⚠ Skipped {len(skipped)} export(s) that could not be read "
+              "(format mismatch — e.g. QBO vs QB Desktop columns); their entities "
+              "are missing from this run until the mapping/export is fixed:")
+        for label in skipped:
+            print(f"      - {label}")
     transactions = (dedupe_transactions(pd.concat(txn_frames, ignore_index=True))
                     if txn_frames else pd.DataFrame(columns=TRANSACTION_COLUMNS))
     transactions = ensure_unique_source_ids(transactions)
