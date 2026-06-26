@@ -47,9 +47,24 @@ def load_mappings(path: Path | str = DEFAULT_MAPPINGS_PATH) -> dict:
     return yaml.safe_load(Path(path).read_text())
 
 
+def _candidates(spec) -> list[str]:
+    """A column spec is a single header name or a list of candidate names (first
+    one present in the export wins). Lets one mapping serve both QB Desktop and
+    QuickBooks Online, whose reports label the same field differently
+    (e.g. "Date" vs "Transaction date", "Memo" vs "Description")."""
+    return [spec] if isinstance(spec, str) else list(spec)
+
+
 def read_report(path: Path, mapping: dict) -> pd.DataFrame:
     """Read a QB-style export, locating the real header row on any sheet."""
-    expected = {str(v) for v in mapping.get("columns", {}).values()}
+    # Real header candidates from the column map (skip "__"-prefixed synthetic
+    # group-header names), plus the txn_type_from column(s), so QBO headers are
+    # recognized when scoring the header row.
+    expected = {h for spec in mapping.get("columns", {}).values()
+                for h in _candidates(spec) if not str(h).startswith("__")}
+    type_spec = mapping.get("txn_type_from")
+    if type_spec:
+        expected |= set(_candidates(type_spec["column"]))
     if path.suffix.lower() == ".csv":
         sheets = {"csv": pd.read_csv(path, header=None, dtype=object,
                                      skip_blank_lines=False)}
@@ -125,17 +140,18 @@ def normalize_frame(
     out = pd.DataFrame(index=raw.index)
     for canonical in target_columns:
         if canonical in columns:
-            source_col = columns[canonical]
-            if source_col in raw.columns:
+            cands = _candidates(columns[canonical])
+            source_col = next((c for c in cands if c in raw.columns), None)
+            if source_col is not None:
                 out[canonical] = raw[source_col]
             elif canonical in required:
                 raise ValueError(
-                    f"{label}: mapping expects column '{source_col}' for required field "
+                    f"{label}: mapping expects one of {cands} for required field "
                     f"'{canonical}' but the export has: {list(raw.columns)}. "
                     "Update config/source_mappings.yaml."
                 )
             else:
-                print(f"  ~ {label}: column '{source_col}' ({canonical}) not found — "
+                print(f"  ~ {label}: none of {cands} ({canonical}) found — "
                       "left blank. Adjust config/source_mappings.yaml if it exists "
                       "under another name.")
                 out[canonical] = None
@@ -148,18 +164,27 @@ def normalize_frame(
 
     type_spec = mapping.get("txn_type_from")
     if type_spec and "txn_type" in target_columns:
-        source_col = type_spec["column"]
-        if source_col not in raw.columns:
-            raise ValueError(f"{label}: txn_type_from column '{source_col}' not in export "
+        cands = _candidates(type_spec["column"])
+        source_col = next((c for c in cands if c in raw.columns), None)
+        if source_col is None:
+            # No Type column present. If the mapping also sets a constant txn_type
+            # (a QB Desktop report that needs no per-row type), keep that constant.
+            if "txn_type" in constants:
+                return out
+            raise ValueError(f"{label}: txn_type_from column(s) {cands} not in export "
                              f"({list(raw.columns)})")
         mapped = raw[source_col].astype(str).str.strip().map(type_spec["values"])
         out["txn_type"] = mapped
         if type_spec.get("drop_unmapped", True):
-            dropped = int((mapped.isna() & raw[source_col].notna()
-                           & raw[source_col].astype(str).str.strip().ne("")).sum())
+            unmapped = (mapped.isna() & raw[source_col].notna()
+                        & raw[source_col].astype(str).str.strip().ne(""))
+            dropped = int(unmapped.sum())
             if dropped:
+                # Surface the actual unmapped labels so a run reveals exactly which
+                # QBO type strings still need adding to `values` (vs. silently lost).
+                seen = sorted(raw.loc[unmapped, source_col].astype(str).str.strip().unique())
                 print(f"  ~ {label}: dropped {dropped} rows with types owned by "
-                      "another report or out of scope")
+                      f"another report or out of scope (unmapped types: {seen[:12]})")
             out = out[mapped.notna()]
     return out
 
