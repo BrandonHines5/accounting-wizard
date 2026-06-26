@@ -136,24 +136,79 @@ def test_ingest_data_dir_dedupes_multi_split_credit_memo_keys(tmp_path, registry
 
 
 def test_ingest_data_dir_skips_unreadable_export_without_aborting(tmp_path, registry, capsys):
-    # One entity's QBO-format export (different column names) can't map its required
-    # fields. It must be skipped with a loud notice, NOT abort the whole batch — the
-    # valid exports in the same run still ingest.
+    # An export whose columns match no candidate at all can't be read. It must be
+    # skipped with a loud notice, NOT abort the batch — valid exports still ingest.
     entity_dir = tmp_path / "alpha"
     entity_dir.mkdir()
-    credit_memo_raw().to_csv(entity_dir / "qb__credit_memos.csv", index=False)  # valid (Desktop)
-    qbo_gl = pd.DataFrame({                                                     # QBO column names
-        "Transaction date": ["2026-05-05"], "Transaction type": ["Journal Entry"],
-        "Num": ["1"], "Name": ["Acme"], "Description": ["d"], "Split": ["-SPLIT-"],
-        "Amount": [10.0], "Balance": [10.0],
-    })
-    qbo_gl.to_csv(entity_dir / "qb__general_ledger.csv", index=False)
+    credit_memo_raw().to_csv(entity_dir / "qb__credit_memos.csv", index=False)  # valid
+    pd.DataFrame({"Widget": ["x"], "Gizmo": ["y"], "Doohickey": ["z"]}).to_csv(
+        entity_dir / "qb__general_ledger.csv", index=False)                     # unmappable
 
     transactions, vendors, cost_lines = ingest_data_dir(tmp_path, registry, load_mappings())
     assert len(transactions) == 1                       # the valid credit memo still ingested
     assert transactions.iloc[0]["txn_type"] == "credit_memo"
     out = capsys.readouterr().out
-    assert "SKIPPED" in out and "qb__general_ledger" in out   # the bad export was flagged
+    assert "SKIPPED" in out and "qb__general_ledger" in out
+
+
+def test_ingest_reads_qbo_general_ledger(tmp_path, registry):
+    # QuickBooks Online GL uses different headers than Desktop (verified against a
+    # real export). The candidate-column mapping must ingest it: keep Journal
+    # Entries, drop the rest, and read account from "Distribution account".
+    entity_dir = tmp_path / "alpha"
+    entity_dir.mkdir()
+    qbo_gl = pd.DataFrame({
+        "Distribution account": ["5000 COGS", "1000 Checking"],
+        "Transaction date": ["2026-05-05", "2026-05-06"],
+        "Transaction type": ["Journal Entry", "Expense"],      # Expense dropped (GL keeps journals)
+        "Num": ["JE1", "E2"], "Name": ["Acme", "Bob"],
+        "Description": ["reclass", "fuel"], "Split": ["-SPLIT-", "1000"],
+        "Amount": [250.0, 40.0], "Balance": [250.0, 290.0],
+    })
+    qbo_gl.to_csv(entity_dir / "qb__general_ledger.csv", index=False)
+    transactions, _, _ = ingest_data_dir(tmp_path, registry, load_mappings())
+    assert len(transactions) == 1                              # only the Journal Entry kept
+    row = transactions.iloc[0]
+    assert row["txn_type"] == "journal"
+    assert row["account"] == "5000 COGS"                       # from "Distribution account"
+    assert str(row["date"])[:10] == "2026-05-05"
+    assert row["memo"] == "reclass"                            # from "Description"
+
+
+def test_ingest_reads_qbo_vendor_transaction_detail(tmp_path, registry):
+    # QBO Transaction List by Vendor: vendor in a column (not a section row),
+    # QBO type labels and "Transaction date"/"Description" headers.
+    entity_dir = tmp_path / "alpha"
+    entity_dir.mkdir()
+    qbo_vtd = pd.DataFrame({
+        "Transaction date": ["2026-05-05", "2026-05-06", "2026-05-07"],
+        "Transaction type": ["Bill", "Bill Payment", "Deposit"],   # Deposit dropped
+        "Num": ["B1", "P1", "D1"], "Vendor": ["Acme", "Acme", "Acme"],
+        "Split": ["5000", "1000", "4000"], "Amount": [500.0, -500.0, 99.0],
+        "Description": ["lumber", "pay", "refund"],
+    })
+    qbo_vtd.to_csv(entity_dir / "qb__vendor_transaction_detail.csv", index=False)
+    transactions, _, _ = ingest_data_dir(tmp_path, registry, load_mappings())
+    assert sorted(transactions["txn_type"]) == ["bill", "bill_payment"]   # Deposit dropped
+    assert set(transactions["vendor_name"]) == {"Acme"}                   # from "Vendor" column
+
+
+def test_ingest_reads_qbo_credit_memos_via_type_column(tmp_path, registry):
+    # QBO credit report carries a Transaction Type column (Credit Memo / Vendor
+    # Credit); the Desktop one has none and falls back to the constant.
+    entity_dir = tmp_path / "alpha"
+    entity_dir.mkdir()
+    qbo_cm = pd.DataFrame({
+        "Transaction date": ["2026-05-05", "2026-05-06"],
+        "Transaction type": ["Credit Memo", "Vendor Credit"],
+        "Num": ["CM1", "VC1"], "Name": ["Acme", "Beta"],
+        "Account": ["1200", "2000"], "Amount": [-50.0, -75.0],
+        "Description": ["return", "rebate"],
+    })
+    qbo_cm.to_csv(entity_dir / "qb__credit_memos.csv", index=False)
+    transactions, _, _ = ingest_data_dir(tmp_path, registry, load_mappings())
+    assert len(transactions) == 2
+    assert set(transactions["txn_type"]) == {"credit_memo"}              # both map to credit_memo   # the bad export was flagged
 
 
 def test_read_report_skips_title_rows_and_empty_sheets(tmp_path):

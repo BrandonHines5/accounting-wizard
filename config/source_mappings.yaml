@@ -1,103 +1,139 @@
 # Maps each export file (by filename stem, e.g. qb__check_detail.xlsx) to the
 # canonical transaction/vendor columns. The reader auto-detects the header row
-# and worksheet; these mappings are verified against the real Hines Homes
-# exports (June 2026).
+# and worksheet.
 #
-# kind:           transactions (default) | vendors
+# Hines Homes and Titan House export from QuickBooks DESKTOP; the other six
+# entities export from QuickBooks ONLINE, whose reports label the same field
+# differently ("Date" vs "Transaction date", "Memo" vs "Description", a real
+# "Distribution account" column vs a forward-filled section row, etc.). So each
+# canonical field maps to EITHER a single "Header" OR a [list, of, candidate,
+# headers] — the first candidate present in the export wins — and one mapping
+# serves both platforms. The GL candidates below are verified against a real QBO
+# export; the other QBO candidates are best-effort and confirmed by running (the
+# ingest logs the actual columns/types of anything it can't map).
+#
+# kind:           transactions (default) | vendors | cost_lines
 # priority:       when the same QB Trans # appears in several reports, rows
 #                 from the highest-priority report win
-# group_headers:  grouped QB reports put the vendor/account on a section row;
-#                 carry it down so detail rows can map it ({column, as})
-# txn_type_from:  derive txn_type from the report's Type column; unmapped
-#                 types are dropped (another report owns them)
-# columns:        canonical_column: "Export Header" (or _colN for unlabeled)
+# group_headers:  grouped QB Desktop reports put the vendor/account on a section
+#                 row; carry it down ({column, as}). QBO carries it in a real
+#                 column instead, so the canonical field lists both (the synthetic
+#                 "__name" first, the QBO column second).
+# txn_type_from:  derive txn_type from the report's Type column; unmapped types
+#                 are dropped (another report owns them). `column` may be a list
+#                 of candidate headers; `values` covers Desktop + QBO labels. If
+#                 no candidate column is present but a constant txn_type is set,
+#                 the constant is kept (a Desktop report with no Type column).
+# columns:        canonical_column: "Header" | [candidate, headers]
 # constants:      canonical_column: fixed value
 #
 # `cost_code` (the QB Item name) comes from Purchases by Item Detail (kind:
 # cost_lines, below). It feeds T1-20 (vendor/cost-code mismatch) and T2-05 (vendor
-# concentration shift).
+# concentration shift). QBO has no equivalent purchase-by-item report, so the QBO
+# entities simply don't supply it (those two rules just don't fire for them).
 
-# Vendor Transaction Detail is the canonical source for vendor money movement:
-# bills, bill payments, and direct checks each appear exactly once here.
+# Vendor Transaction Detail (Desktop) / Transaction List by Vendor (QBO) is the
+# canonical source for vendor money movement: bills, bill payments, and direct
+# checks each appear exactly once here.
 qb__vendor_transaction_detail:
   priority: 30
   group_headers:
-    - column: "_col1"          # vendor name appears as a section row
+    - column: "_col1"          # QB Desktop: vendor name on its own section row
       as: "__vendor"
   txn_type_from:
-    column: "Type"
+    column: ["Type", "Transaction type", "Transaction Type"]
     values:
+      # QuickBooks Desktop
       "Bill Pmt -Check": bill_payment
       "Bill Pmt -CCard": bill_payment
       "Check": check
       "Bill": bill
+      # QuickBooks Online
+      "Bill Payment": bill_payment
+      "Bill Payment (Check)": bill_payment
+      "Bill Payment (Credit Card)": bill_payment
+      "Expense": ach
+      "Credit Card Expense": card
+      "Cash Expense": ach
       # Credit / Deposit / etc. are owned by other reports — dropped here
   columns:
-    date: "Date"
-    vendor_name: "__vendor"
-    invoice_no: "Num"          # invoice no. on Bills, check no. on payments
-    check_no: "Num"
-    account: "Split"           # the cost / counter account
-    amount: "Amount"
-    memo: "Memo"
+    date: ["Date", "Transaction date", "Transaction Date"]
+    vendor_name: ["__vendor", "Vendor", "Name"]
+    invoice_no: ["Num", "No."]          # invoice no. on Bills, check no. on payments
+    check_no: ["Num", "No."]
+    account: ["Split", "Account", "Distribution account"]   # the cost / counter account
+    amount: ["Amount"]
+    memo: ["Memo", "Description"]
 
 # General Ledger: journals only (payments/credits owned by the reports above).
-# TODO: add "Trans #", "Class", and "Last modified by" columns to the
-# memorized GL report to enable journal grouping (T1-21) and entered-by.
+# QBO columns verified against a real export ("Transaction date"/"Transaction
+# type"/"Distribution account"/"Description").
+# TODO: add "Trans #", "Class", and "Last modified by" to the memorized Desktop
+# GL to enable journal grouping (T1-21) and entered-by.
 qb__general_ledger:
   priority: 10
   group_headers:
-    - column: "_col1"          # account name appears as a section row
+    - column: "_col1"          # QB Desktop: account name on its own section row
       as: "__account"
   txn_type_from:
-    column: "Type"
+    column: ["Type", "Transaction type", "Transaction Type"]
     values:
-      "General Journal": journal
+      "General Journal": journal     # QuickBooks Desktop
+      "Journal Entry": journal       # QuickBooks Online
   columns:
-    date: "Date"
-    vendor_name: "Name"
-    account: "__account"
-    amount: "Amount"
-    check_no: "Num"
-    memo: "Memo"
+    date: ["Date", "Transaction date"]
+    vendor_name: ["Name"]
+    account: ["__account", "Distribution account", "Account"]
+    amount: ["Amount"]
+    check_no: ["Num"]
+    memo: ["Memo", "Description"]
 
+# Credit memos / vendor credits. Desktop export has no Type column (constant
+# txn_type); the QBO "Transaction List by Date" filtered to Credit Memo + Vendor
+# Credit carries a Transaction Type column, mapped below.
 qb__credit_memos:
   priority: 25
-  columns:
-    source_id: "Trans #"
-    date: "Date"
-    vendor_name: "Name"
-    invoice_no: "Num"
-    job_id: "Class"
-    account: "Account"
-    amount: "Amount"
-    memo: "Memo"
-    entered_by: "Last modified by"
+  txn_type_from:
+    column: ["Type", "Transaction type", "Transaction Type"]
+    values:
+      "Credit Memo": credit_memo
+      "Vendor Credit": credit_memo
+      "Credit": credit_memo
+      "Bill Credit": credit_memo
   constants:
-    txn_type: credit_memo
+    txn_type: credit_memo            # used when there's no Type column (Desktop)
+  columns:
+    source_id: ["Trans #"]
+    date: ["Date", "Transaction date"]
+    vendor_name: ["Name"]
+    invoice_no: ["Num", "No."]
+    job_id: ["Class"]
+    account: ["Account", "Distribution account", "Split"]
+    amount: ["Amount"]
+    memo: ["Memo", "Description"]
+    entered_by: ["Last modified by", "Last Modified By", "Created By"]
 
-# Check Detail duplicates Vendor Transaction Detail for Tier 1 purposes
-# (same checks, same payments). It becomes the book-side input for Tier 4
-# bank reconciliation — disabled until then to avoid double-counting.
+# Check Detail — book-side source for Tier 4 bank reconciliation (3-way match
+# books <-> bank <-> cancelled check image). Disabled for Tier 1 to avoid
+# double-counting the same checks that come from Vendor Transaction Detail.
+# Mapping is built and QBO-ready so Tier 4 works for every entity once enabled.
 qb__check_detail:
   enabled: false
   notes: "Tier 4 book-side source; Tier 1 payments come from vendor transaction detail"
+  constants:
+    txn_type: check
   columns:
-    date: "Date"
-    vendor_name: "Name"
-    account: "Account"
-    amount: "Original Amount"
-    check_no: "Num"
+    date: ["Date", "Transaction date"]
+    vendor_name: ["Name"]
+    account: ["Account", "Split", "Distribution account"]
+    amount: ["Original Amount", "Amount"]
+    check_no: ["Num", "No."]
 
-# Purchases by Item Detail — the item-coded job-cost source. One row per item
-# line, carrying the Item (cost code, as a section header) and the vendor (Source
-# Name). Ingested as kind: cost_lines so its item lines never double-count against
-# Vendor Transaction Detail (the same bills appear there once, transaction-level).
-# Overhead that bypasses Items simply isn't in this report — correct, those costs
-# carry no cost_code. Feeds T1-20 (vendor/cost-code mismatch) and T2-05.
-# NOTE: the Item section header lands in "_col1" by analogy to vendor_transaction_
-# detail; confirm against the first real export and adjust the column if QB's
-# indent differs.
+# Purchases by Item Detail — the item-coded job-cost source (QB Desktop only;
+# QBO has no purchase-by-item report). One row per item line, carrying the Item
+# (cost code, as a section header) and the vendor (Source Name). Ingested as
+# kind: cost_lines so its item lines never double-count against Vendor
+# Transaction Detail. Feeds T1-20 (vendor/cost-code mismatch) and T2-05.
 qb__purchases_by_item_detail:
   kind: cost_lines
   group_headers:
@@ -118,15 +154,15 @@ qb__purchases_by_item_detail:
     amount: "Amount"
     memo: "Memo"
 
-# Vendor Contact List.
+# Vendor Contact List (Desktop) / Vendor Contact List (QBO).
 # TODO: add "Date Created" (enables T1-11 new-vendor checks) and "Tax ID"
-# (strengthens T1-10 duplicate detection) to the memorized report.
+# (strengthens T1-10 duplicate detection) to the memorized Desktop report.
 qb__vendor_list:
   kind: vendors
   columns:
-    vendor_id: "Vendor"
-    vendor_name: "Vendor"
-    address: "Bill from"
-    phone: "Main Phone"
-    ein: "Tax ID"
-    first_seen: "Date Created"
+    vendor_id: ["Vendor", "Vendor Name", "Display Name"]
+    vendor_name: ["Vendor", "Vendor Name", "Display Name"]
+    address: ["Bill from", "Billing Address", "Address", "Full Name"]
+    phone: ["Main Phone", "Phone", "Phone Numbers"]
+    ein: ["Tax ID", "Business ID No.", "Tax ID/SSN"]
+    first_seen: ["Date Created", "Created"]
