@@ -3,7 +3,9 @@ into <data-dir>/<entity_id>/, skip subfolders and unknown entities — all with 
 fake Graph session (no network)."""
 from urllib.parse import quote
 
-from ingest.sharepoint import GraphFolderSource, pull_all, pull_entity
+from bank.accounts import BankAccount
+from ingest.sharepoint import (GraphFolderSource, pull_all, pull_bank_statements,
+                               pull_entity)
 
 # Only the stem needs to match a source-mapping key; contents are irrelevant here.
 MAPPINGS = {
@@ -115,3 +117,48 @@ def test_content_url_uses_drive_path_addressing():
     url = _source([], {})._content_url("Personal/acct-wizard/HinesHomes", "qb__vendor_list.xlsx")
     assert url.endswith(
         "/drives/drv1/root:/Personal/acct-wizard/HinesHomes/qb__vendor_list.xlsx:/content")
+
+
+# ---------------------------------------------------------- Tier 4 statement pull
+
+def _pdf_account(**over):
+    base = dict(entity_id="hines-homes", label="operating",
+                account_number_env="HINES_HOMES_OPERATING_ACCT",
+                statement_glob="hines-homes/operating/*.pdf", fmt="pdf",
+                layout="first_service_bank",
+                sharepoint_folder="P/HinesHomes/Bank")
+    base.update(over)
+    return BankAccount(**base)
+
+
+def test_pull_bank_statements_downloads_only_matching_format(tmp_path):
+    listing = ["statement_april.pdf", "checks_scan.png", "notes.docx", "statement_may.pdf"]
+    files = {"statement_april.pdf": b"PDF1", "statement_may.pdf": b"PDF2"}
+    src = _source(listing, files)
+    pulled = pull_bank_statements([_pdf_account()], tmp_path, source=src)
+    assert pulled == {"hines-homes/operating": ["statement_april.pdf", "statement_may.pdf"]}
+    # lands under the directory the statement_glob expects, so Tier 4 finds it
+    dest = tmp_path / "hines-homes" / "operating"
+    assert (dest / "statement_april.pdf").read_bytes() == b"PDF1"
+    assert not (dest / "checks_scan.png").exists()     # image, not a statement
+    assert not (dest / "notes.docx").exists()
+
+
+def test_pull_bank_statements_skips_accounts_without_folder(tmp_path):
+    src = _source(["s.pdf"], {"s.pdf": b"X"})
+    acct = _pdf_account(sharepoint_folder=None)
+    assert pull_bank_statements([acct], tmp_path, source=src) == {}
+
+
+def test_pull_bank_statements_continues_when_one_account_errors(tmp_path):
+    # _FlakySource serves a fixed 'qb__vendor_list.xlsx', so use xlsx-format accounts.
+    bad = _pdf_account(label="bad", fmt="xlsx", layout=None,
+                       statement_glob="hines-homes/bad/*.xlsx",
+                       sharepoint_folder="P/Missing")
+    good = _pdf_account(label="operating", fmt="xlsx", layout=None,
+                        statement_glob="hines-homes/operating/*.xlsx",
+                        sharepoint_folder="P/Good")
+    pulled = pull_bank_statements([bad, good], tmp_path,
+                                  source=_FlakySource(bad_folder="P/Missing"))
+    assert pulled["hines-homes/bad"] == []                       # skipped, not fatal
+    assert pulled["hines-homes/operating"] == ["qb__vendor_list.xlsx"]

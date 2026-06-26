@@ -34,6 +34,14 @@ class BankAccount:
     account_number_env: str
     statement_glob: str
     fmt: str = "csv"                          # csv | xlsx | pdf
+    # For pdf statements with no ruled table lines (e.g. First Service Bank), the
+    # per-bank positional parser to use — a key in statement_extract.PDF_LAYOUTS.
+    # Empty falls back to the generic ruled-table read.
+    layout: str | None = None
+    # Optional SharePoint folder the weekly run pulls this account's statements from
+    # (via Microsoft Graph) into the bank-dir before Tier 4. Empty → statements are
+    # synced into the bank-dir by some other means.
+    sharepoint_folder: str | None = None
     columns: dict = field(default_factory=dict)
     # Optional cancelled-check image config (Tier 4 T4-03/04/05): a subdir under
     # --check-image-dir plus front/back filename patterns. Empty → no image reads.
@@ -60,6 +68,8 @@ def load_bank_accounts(path: str | Path) -> list[BankAccount]:
             account_number_env=item["account_number_env"],
             statement_glob=item["statement_glob"],
             fmt=str(item.get("format", "csv")).lower(),
+            layout=item.get("layout") or None,
+            sharepoint_folder=item.get("sharepoint_folder") or None,
             columns=item.get("columns") or {},
             check_images=item.get("check_images") or {},
         )
@@ -79,13 +89,16 @@ def extract_account(
     bank_transactions. The account number is resolved first (fail fast on a missing
     secret); per-file extraction errors go to `on_error` and are skipped."""
     number = account.account_number()        # fail fast before touching files
-    extractor = extract_pdf if account.fmt == "pdf" else extract_export
+    is_pdf = account.fmt == "pdf"
+    extractor = extract_pdf if is_pdf else extract_export
+    extra = {"layout": account.layout} if is_pdf else {}
     frames: list[pd.DataFrame] = []
     for path in sorted(Path(bank_dir).glob(account.statement_glob)):
         try:
             frames.append(extractor(
                 path, entity_id=account.entity_id, account_number=number,
-                known_entity_ids=known_entity_ids, columns=account.columns, salt=salt))
+                known_entity_ids=known_entity_ids, columns=account.columns, salt=salt,
+                **extra))
         except Exception as exc:  # noqa: BLE001 — one bad file shouldn't sink the run
             if on_error is None:
                 raise

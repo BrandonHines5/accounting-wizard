@@ -25,6 +25,8 @@ from core.entities import REPO_ROOT
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "sharepoint.yaml"
 INGEST_EXTS = {".xlsx", ".xls", ".csv"}
+# Statement file extensions accepted per bank-account format (Tier 4 pull).
+BANK_EXTS_BY_FMT = {"pdf": {".pdf"}, "csv": {".csv"}, "xlsx": {".xlsx", ".xls"}}
 GRAPH_ENV = ("GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET")
 
 
@@ -111,17 +113,61 @@ def pull_entity(source: GraphFolderSource, folder: str, dest_dir: Path | str,
     return pulled
 
 
+def _resolve_source(config: dict | None,
+                    source: GraphFolderSource | None) -> GraphFolderSource:
+    """Build a GraphFolderSource from config['drive_id'] or GRAPH_DRIVE_ID."""
+    if source is not None:
+        return source
+    drive_id = (config or {}).get("drive_id") or os.environ.get("GRAPH_DRIVE_ID")
+    if not drive_id:
+        raise RuntimeError("No SharePoint drive id: set GRAPH_DRIVE_ID or add "
+                           "drive_id to config/sharepoint.yaml")
+    return GraphFolderSource(drive_id=drive_id)
+
+
+def pull_bank_statements(accounts, bank_dir: Path | str, *, config: dict | None = None,
+                         source: GraphFolderSource | None = None, on_file=None) -> dict:
+    """Download each account's statements from its SharePoint folder into the
+    bank-dir, under the directory its `statement_glob` expects.
+
+    `accounts` are BankAccount entries; only those with a `sharepoint_folder` are
+    pulled. Files are kept whose extension matches the account's format (a bank
+    folder may also hold check images or other docs). Statements land at
+    <bank-dir>/<dir of statement_glob>/<name> so the Tier 4 glob finds them. One
+    account's missing/inaccessible folder is logged and skipped, never aborting the
+    batch. Returns {f"{entity_id}/{label}": [downloaded names]}."""
+    src = _resolve_source(config, source)
+    pulled: dict[str, list[str]] = {}
+    for account in accounts:
+        if not account.sharepoint_folder:
+            continue
+        key = f"{account.entity_id}/{account.label}"
+        exts = BANK_EXTS_BY_FMT.get(account.fmt, {f".{account.fmt}"})
+        dest = Path(bank_dir) / Path(account.statement_glob).parent
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            names = []
+            for name in src.list_files(account.sharepoint_folder):
+                if os.path.splitext(name)[1].lower() not in exts:
+                    continue
+                (dest / name).write_bytes(src.download(account.sharepoint_folder, name))
+                names.append(name)
+                if on_file is not None:
+                    on_file(name, (dest / name).stat().st_size)
+            pulled[key] = names
+        except Exception as exc:  # noqa: BLE001 — one account must not abort the batch
+            print(f"  ! SharePoint: could not pull statements for '{key}' from "
+                  f"'{account.sharepoint_folder}' ({type(exc).__name__}) — skipped")
+            pulled[key] = []
+    return pulled
+
+
 def pull_all(config: dict, data_dir: Path | str, registry, mappings: dict, *,
              source: GraphFolderSource | None = None, on_file=None) -> dict:
     """Pull every configured-and-registered entity's folder into
     <data-dir>/<entity_id>/. `source` is injectable for testing; otherwise built
     from `config['drive_id']` or GRAPH_DRIVE_ID."""
-    if source is None:
-        drive_id = config.get("drive_id") or os.environ.get("GRAPH_DRIVE_ID")
-        if not drive_id:
-            raise RuntimeError("No SharePoint drive id: set GRAPH_DRIVE_ID or add "
-                               "drive_id to config/sharepoint.yaml")
-        source = GraphFolderSource(drive_id=drive_id)
+    source = _resolve_source(config, source)
     known = {e.id for e in registry}
     pulled: dict[str, list[str]] = {}
     for entity_id, ent in (config.get("entities") or {}).items():
