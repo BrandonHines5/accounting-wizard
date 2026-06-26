@@ -83,6 +83,34 @@ def test_pull_all_routes_to_entity_dirs_and_skips_unknown(tmp_path, registry):
     assert (tmp_path / known_id / "qb__vendor_list.xlsx").read_bytes() == b"VL"
 
 
+class _FlakySource:
+    """Raises on one folder, serves a file from any other — to prove one bad
+    folder (e.g. a not-yet-populated new entity) doesn't abort the whole batch."""
+
+    def __init__(self, bad_folder):
+        self.bad_folder = bad_folder
+
+    def list_files(self, folder):
+        if folder == self.bad_folder:
+            raise RuntimeError("HTTP 404")
+        return ["qb__vendor_list.xlsx"]
+
+    def download(self, folder, name):
+        return b"VL"
+
+
+def test_pull_all_continues_when_one_entity_folder_errors(tmp_path, registry):
+    ids = [e.id for e in registry]
+    assert len(ids) >= 2
+    bad, good = ids[0], ids[1]
+    src = _FlakySource(bad_folder="F/Missing")
+    cfg = {"entities": {bad: {"folder": "F/Missing"}, good: {"folder": "F/Good"}}}
+    pulled = pull_all(cfg, tmp_path, registry, MAPPINGS, source=src)
+    assert pulled[bad] == []                                  # skipped, not fatal
+    assert pulled[good] == ["qb__vendor_list.xlsx"]           # other entity still pulled
+    assert (tmp_path / good / "qb__vendor_list.xlsx").read_bytes() == b"VL"
+
+
 def test_content_url_uses_drive_path_addressing():
     url = _source([], {})._content_url("Personal/acct-wizard/HinesHomes", "qb__vendor_list.xlsx")
     assert url.endswith(

@@ -131,6 +131,14 @@ def pull_all(config: dict, data_dir: Path | str, registry, mappings: dict, *,
         folder = (ent or {}).get("folder")
         if not folder:
             continue
-        pulled[entity_id] = pull_entity(source, folder, Path(data_dir) / entity_id,
-                                        mappings, on_file=on_file)
+        try:
+            pulled[entity_id] = pull_entity(source, folder, Path(data_dir) / entity_id,
+                                            mappings, on_file=on_file)
+        except Exception as exc:  # noqa: BLE001 — one entity's folder must not abort the batch
+            # A missing/renamed/inaccessible folder (e.g. a newly-onboarded entity
+            # whose exports haven't landed yet) is logged and skipped so the other
+            # entities still pull and the weekly run completes.
+            print(f"  ! SharePoint: could not pull '{entity_id}' from '{folder}' "
+                  f"({type(exc).__name__}) — skipped; other entities continue")
+            pulled[entity_id] = []
     return pulled

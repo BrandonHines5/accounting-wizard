@@ -22,5 +22,19 @@
 entities:
   hines-homes:
     folder: "Personal Folders/Brandon/Claude Code/acct-wizard/HinesHomes"
+  titan-house:
+    folder: "Personal Folders/Brandon/Claude Code/acct-wizard/TitanHouse"
+  l2f-ventures:
+    folder: "Personal Folders/Brandon/Claude Code/acct-wizard/L2FVentures"
+  mojuva:
+    folder: "Personal Folders/Brandon/Claude Code/acct-wizard/Mojuva"
+  stonebrook-poa:
+    folder: "Personal Folders/Brandon/Claude Code/acct-wizard/StonebrookPOA"
+  13525wm:
+    folder: "Personal Folders/Brandon/Claude Code/acct-wizard/13525WM"
+  # Folders not created yet — uncomment each when its exports start landing
+  # (the folder name must match SharePoint exactly):
   # hope-filled:
-  #   folder: "Forensics/HopeFilled"
+  #   folder: "Personal Folders/Brandon/Claude Code/acct-wizard/HopeFilled"
+  # blue-tree-realty:
+  #   folder: "Personal Folders/Brandon/Claude Code/acct-wizard/BlueTreeRealty"
