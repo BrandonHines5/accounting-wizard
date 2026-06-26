@@ -32,9 +32,7 @@ entities:
     folder: "Personal Folders/Brandon/Claude Code/acct-wizard/StonebrookPOA"
   13525wm:
     folder: "Personal Folders/Brandon/Claude Code/acct-wizard/13525WM"
-  # Folders not created yet — uncomment each when its exports start landing
-  # (the folder name must match SharePoint exactly):
-  # hope-filled:
-  #   folder: "Personal Folders/Brandon/Claude Code/acct-wizard/HopeFilled"
-  # blue-tree-realty:
-  #   folder: "Personal Folders/Brandon/Claude Code/acct-wizard/BlueTreeRealty"
+  hope-filled:
+    folder: "Personal Folders/Brandon/Claude Code/acct-wizard/HopeFilledHomes"
+  blue-tree-realty:
+    folder: "Personal Folders/Brandon/Claude Code/acct-wizard/BlueTreeRealty"
