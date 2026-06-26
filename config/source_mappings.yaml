@@ -40,6 +40,8 @@ qb__vendor_transaction_detail:
   group_headers:
     - column: "_col1"          # QB Desktop: vendor name on its own section row
       as: "__vendor"
+    - column: "_col0"          # QBO: vendor section header sits in the first column
+      as: "__vendor_qbo"
   txn_type_from:
     column: ["Type", "Transaction type", "Transaction Type"]
     values:
@@ -58,10 +60,11 @@ qb__vendor_transaction_detail:
       # Credit / Deposit / etc. are owned by other reports — dropped here
   columns:
     date: ["Date", "Transaction date", "Transaction Date"]
-    vendor_name: ["__vendor", "Vendor", "Name"]
+    vendor_name: ["__vendor", "__vendor_qbo", "Vendor", "Name"]
     invoice_no: ["Num", "No."]          # invoice no. on Bills, check no. on payments
     check_no: ["Num", "No."]
-    account: ["Split", "Account", "Distribution account"]   # the cost / counter account
+    # cost / counter account: Desktop "Split"; QBO "Account full name" / "Item split account"
+    account: ["Split", "Account full name", "Item split account", "Account", "Distribution account"]
     amount: ["Amount"]
     memo: ["Memo", "Description"]
 
@@ -107,8 +110,8 @@ qb__credit_memos:
     date: ["Date", "Transaction date"]
     vendor_name: ["Name"]
     invoice_no: ["Num", "No."]
-    job_id: ["Class"]
-    account: ["Account", "Distribution account", "Split"]
+    job_id: ["Class", "Class full name"]
+    account: ["Account", "Account full name", "Distribution account", "Split"]
     amount: ["Amount"]
     memo: ["Memo", "Description"]
     entered_by: ["Last modified by", "Last Modified By", "Created By"]
@@ -162,7 +165,7 @@ qb__vendor_list:
   columns:
     vendor_id: ["Vendor", "Vendor Name", "Display Name"]
     vendor_name: ["Vendor", "Vendor Name", "Display Name"]
-    address: ["Bill from", "Billing Address", "Address", "Full Name"]
-    phone: ["Main Phone", "Phone", "Phone Numbers"]
+    address: ["Bill from", "Billing address", "Billing Address", "Address", "Full name"]
+    phone: ["Main Phone", "Phone numbers", "Phone", "Phone Numbers"]
     ein: ["Tax ID", "Business ID No.", "Tax ID/SSN"]
-    first_seen: ["Date Created", "Created"]
+    first_seen: ["Date Created", "Created on", "Created"]

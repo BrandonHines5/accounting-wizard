@@ -176,21 +176,24 @@ def test_ingest_reads_qbo_general_ledger(tmp_path, registry):
 
 
 def test_ingest_reads_qbo_vendor_transaction_detail(tmp_path, registry):
-    # QBO Transaction List by Vendor: vendor in a column (not a section row),
-    # QBO type labels and "Transaction date"/"Description" headers.
+    # Real QBO Transaction List by Vendor: vendor is a section header in the first
+    # column (forward-filled), "Account full name" is the account, QBO type labels.
     entity_dir = tmp_path / "alpha"
     entity_dir.mkdir()
-    qbo_vtd = pd.DataFrame({
-        "Transaction date": ["2026-05-05", "2026-05-06", "2026-05-07"],
-        "Transaction type": ["Bill", "Bill Payment", "Deposit"],   # Deposit dropped
-        "Num": ["B1", "P1", "D1"], "Vendor": ["Acme", "Acme", "Acme"],
-        "Split": ["5000", "1000", "4000"], "Amount": [500.0, -500.0, 99.0],
-        "Description": ["lumber", "pay", "refund"],
-    })
-    qbo_vtd.to_csv(entity_dir / "qb__vendor_transaction_detail.csv", index=False)
+    rows = [
+        ["", "Date", "Transaction type", "Num", "Account full name", "Amount", "Memo"],  # header (_col0 blank)
+        ["Acme Lumber", "", "", "", "", "", ""],                       # vendor section header in _col0
+        ["", "2026-05-05", "Bill", "B1", "5000 COGS", 500.0, "lumber"],
+        ["", "2026-05-06", "Bill Payment", "P1", "1000 Checking", -500.0, "pay"],
+        ["", "2026-05-07", "Deposit", "D1", "4000 Income", 99.0, "refund"],   # Deposit dropped
+        ["Total Acme Lumber", "", "", "", "", 0.0, ""],                # subtotal (no date) dropped
+    ]
+    pd.DataFrame(rows).to_csv(entity_dir / "qb__vendor_transaction_detail.csv",
+                              index=False, header=False)
     transactions, _, _ = ingest_data_dir(tmp_path, registry, load_mappings())
     assert sorted(transactions["txn_type"]) == ["bill", "bill_payment"]   # Deposit dropped
-    assert set(transactions["vendor_name"]) == {"Acme"}                   # from "Vendor" column
+    assert set(transactions["vendor_name"]) == {"Acme Lumber"}            # _col0 section, forward-filled
+    assert set(transactions["account"]) == {"5000 COGS", "1000 Checking"} # from "Account full name"
 
 
 def test_ingest_reads_qbo_credit_memos_via_type_column(tmp_path, registry):
