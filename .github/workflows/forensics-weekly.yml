@@ -13,7 +13,16 @@ name: Weekly forensics run
 on:
   schedule:
     - cron: "0 13 * * 1"     # every Monday 13:00 UTC (~7–8am Central) — adjust as you like
-  workflow_dispatch: {}        # plus a manual "Run workflow" button to run on demand
+  workflow_dispatch:           # plus a manual "Run workflow" button to run on demand
+    inputs:
+      tier3:
+        description: "Tier 3 review mode"
+        type: choice
+        default: auto
+        options:
+          - auto        # Claude (Sonnet) review — full quality, slower on big batches
+          - heuristic   # deterministic offline triage — no API, completes in minutes
+          - "off"       # skip Tier 3 entirely
 
 permissions:
   contents: read
@@ -40,7 +49,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python -u -m skill.run --pull-sharepoint on --store supabase --tier3 auto
+        run: python -u -m skill.run --pull-sharepoint on --store supabase --tier3 ${{ github.event.inputs.tier3 || 'auto' }}
       - name: Attach exceptions workbook
         if: always()
         uses: actions/upload-artifact@v4
