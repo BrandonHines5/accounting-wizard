@@ -26,6 +26,12 @@ output/
 !tests/fixtures/*.csv
 !examples/**/*.csv
 
+# Review-UI brand icons (favicon + home-screen bookmark image). Safe, synthetic
+# assets — re-included by exact path so the *.png financial-image guard stays tight.
+!review-ui/app/apple-icon.png
+!review-ui/public/icon-192.png
+!review-ui/public/icon-512.png
+
 # Placeholder README + per-entity drop folders exist in fresh clones,
 # but every real file dropped inside them stays ignored
 !data/README.md
