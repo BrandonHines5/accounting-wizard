@@ -135,6 +135,27 @@ def test_ingest_data_dir_dedupes_multi_split_credit_memo_keys(tmp_path, registry
         ["entity_id", "source_system", "source_id"]).any()
 
 
+def test_ingest_data_dir_skips_unreadable_export_without_aborting(tmp_path, registry, capsys):
+    # One entity's QBO-format export (different column names) can't map its required
+    # fields. It must be skipped with a loud notice, NOT abort the whole batch — the
+    # valid exports in the same run still ingest.
+    entity_dir = tmp_path / "alpha"
+    entity_dir.mkdir()
+    credit_memo_raw().to_csv(entity_dir / "qb__credit_memos.csv", index=False)  # valid (Desktop)
+    qbo_gl = pd.DataFrame({                                                     # QBO column names
+        "Transaction date": ["2026-05-05"], "Transaction type": ["Journal Entry"],
+        "Num": ["1"], "Name": ["Acme"], "Description": ["d"], "Split": ["-SPLIT-"],
+        "Amount": [10.0], "Balance": [10.0],
+    })
+    qbo_gl.to_csv(entity_dir / "qb__general_ledger.csv", index=False)
+
+    transactions, vendors, cost_lines = ingest_data_dir(tmp_path, registry, load_mappings())
+    assert len(transactions) == 1                       # the valid credit memo still ingested
+    assert transactions.iloc[0]["txn_type"] == "credit_memo"
+    out = capsys.readouterr().out
+    assert "SKIPPED" in out and "qb__general_ledger" in out   # the bad export was flagged
+
+
 def test_read_report_skips_title_rows_and_empty_sheets(tmp_path):
     # Simulate a QB export: blank row, title row, then headers + data
     file = tmp_path / "qb__credit_memos.xlsx"
