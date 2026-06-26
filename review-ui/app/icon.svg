@@ -1,0 +1,43 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Accounting Wizard">
+  <!-- White field, matching the SpecMagician family look -->
+  <rect width="512" height="512" fill="#ffffff"/>
+
+  <!-- Wizard hat -->
+  <g transform="translate(256 258) scale(1.18) translate(-269 -254)">
+    <!-- Cone: a classic wizard hat with a gently bent tip -->
+    <path d="M312 92
+             C 296 150 286 196 268 244
+             C 250 292 226 332 196 366
+             C 252 384 316 384 360 366
+             C 344 320 332 268 328 214
+             C 324 168 320 126 312 92 Z"
+          fill="#16233f"/>
+
+    <!-- Brim -->
+    <path d="M150 360
+             C 230 338 318 338 396 366
+             C 402 392 360 410 286 416
+             C 212 422 158 408 142 386
+             C 138 374 142 366 150 360 Z"
+          fill="#1f3357"/>
+
+    <!-- Gold star band across the cone -->
+    <path d="M214 332
+             C 256 320 300 320 340 334
+             L 334 360
+             C 298 348 256 348 222 358 Z"
+          fill="#f2b53a"/>
+
+    <!-- Large 4-point sparkle star on the cone (gold) -->
+    <path d="M286 188
+             L296 224 L332 234 L296 244 L286 280
+             L276 244 L240 234 L276 224 Z"
+          fill="#f2b53a"/>
+
+    <!-- Small sparkles (magic) -->
+    <path d="M360 150 L365 168 L383 173 L365 178 L360 196 L355 178 L337 173 L355 168 Z"
+          fill="#f2b53a"/>
+    <path d="M196 250 L200 263 L213 267 L200 271 L196 284 L192 271 L179 267 L192 263 Z"
+          fill="#16233f"/>
+  </g>
+</svg>
