@@ -151,9 +151,9 @@ def normalize_frame(
                     "Update config/source_mappings.yaml."
                 )
             else:
-                print(f"  ~ {label}: none of {cands} ({canonical}) found — "
-                      "left blank. Adjust config/source_mappings.yaml if it exists "
-                      "under another name.")
+                print(f"  ~ {label}: none of {cands} ({canonical}) found in "
+                      f"{list(raw.columns)} — left blank. Add the right header to "
+                      "config/source_mappings.yaml.")
                 out[canonical] = None
         elif canonical in constants:
             out[canonical] = constants[canonical]
