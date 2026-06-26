@@ -21,6 +21,19 @@ def test_scrub_details_normalizes_keys_and_recurses():
     assert out == {"vendor": "Acme", "nested": {"amount": 5}, "reads": [{"payee": "Acme"}]}
 
 
+def test_scrub_details_nulls_non_finite_floats():
+    # NaN / +Inf / -Inf are not valid JSON — a divide-by-zero stat in a finding's
+    # details must become null, not crash the whole Supabase save.
+    out = _scrub_details({
+        "ratio": float("inf"), "delta": float("-inf"), "score": float("nan"),
+        "ok": 1.5, "count": 3, "label": "Acme",
+        "nested": {"pct": float("nan")}, "series": [float("inf"), 2.0],
+    })
+    assert out == {"ratio": None, "delta": None, "score": None,
+                   "ok": 1.5, "count": 3, "label": "Acme",
+                   "nested": {"pct": None}, "series": [None, 2.0]}
+
+
 @pytest.fixture
 def findings(ctx):
     return run_all(ctx)

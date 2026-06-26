@@ -14,6 +14,7 @@ the check/statement images (SharePoint path references only) — see CLAUDE.md.
 """
 from __future__ import annotations
 
+import math
 import os
 
 import pandas as pd
@@ -22,6 +23,7 @@ from core.findings import Finding
 from persistence.findings_store import FindingsStore
 
 DEFAULT_SCHEMA = "financial_forensics"
+_CHUNK = 500          # upsert findings in batches (a full battery run is large)
 # Read back everything save() writes, so persistence-backed Tier 3 sees its own
 # prior review context (transaction_refs + ai_assessment) on the next run.
 _SELECT = ("fingerprint,rule_id,severity,entity_ids,disposition,disposition_note,"
@@ -56,6 +58,12 @@ def _scrub_details(value):
                 if _norm_key(k) not in _SENSITIVE_NORMALIZED}
     if isinstance(value, list):
         return [_scrub_details(item) for item in value]
+    # NaN / +Inf / -Inf are not valid JSON; a rule that divided by zero (e.g. a
+    # ratio on sparse new-entity data) must not crash the whole findings save.
+    # Drop the non-finite stat to null rather than abort. (np.float64 is a float
+    # subclass, so this catches numpy non-finite values too.)
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     return value
 
 
@@ -79,8 +87,8 @@ class SupabaseFindingsStore(FindingsStore):
 
     def save(self, findings: list[Finding]) -> None:
         rows = [self._row(f) for f in findings]
-        if rows:
-            self._table.upsert(rows, on_conflict="fingerprint",
+        for start in range(0, len(rows), _CHUNK):
+            self._table.upsert(rows[start:start + _CHUNK], on_conflict="fingerprint",
                                ignore_duplicates=True).execute()
 
     @staticmethod
