@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getSupabase } from "../lib/supabaseClient";
 
-const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "INFO"];
 const DISPOSITIONS = [
   { value: "legit", label: "Legit" },
   { value: "error_corrected", label: "Error corrected" },
@@ -177,13 +176,11 @@ function Dashboard({ supabase, session }) {
   const openCount = (findings || []).filter((f) => f.disposition === "open").length;
   const escalatedCount = (findings || []).filter((f) => f.disposition === "escalated").length;
 
-  // Filter dropdown options, derived from the data so nothing is offered that
-  // can't appear — and any unexpected severity still shows up rather than hiding.
-  const sevOptions = [
-    ...SEVERITIES,
-    ...[...new Set((findings || []).map((f) => f.severity))]
-      .filter((s) => s && !SEVERITIES.includes(s)),
-  ];
+  // Both filter dropdowns offer only values present in the loaded findings, so a
+  // reviewer can never pick a dead-end filter with guaranteed-empty results.
+  // Severities sort by rank (CRITICAL→INFO, unknowns last); types alphabetically.
+  const sevOptions = [...new Set((findings || []).map((f) => f.severity).filter(Boolean))]
+    .sort((a, b) => sevRank(a) - sevRank(b) || a.localeCompare(b));
   const typeOptions = [
     ...new Set((findings || []).map((f) => f.rule_id).filter(Boolean)),
   ].sort();
