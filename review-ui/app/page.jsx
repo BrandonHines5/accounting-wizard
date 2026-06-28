@@ -16,6 +16,43 @@ const DISP_LABEL = {
 // Internal detail keys not worth showing the reviewer.
 const HIDE_KEYS = new Set(["sample", "stat_key", "bank_ref", "severity_note"]);
 
+// CRITICAL → INFO ordering for severity sort/grouping. Unknown severities sort last.
+const SEV_RANK = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, INFO: 3 };
+const sevRank = (s) => SEV_RANK[s] ?? 99;
+
+// Sort options offered in the toolbar. "severity" keeps the grouped view; the
+// rest render a flat list in the chosen order.
+const SORTS = [
+  { value: "severity", label: "Criticality (high→low)" },
+  { value: "date_desc", label: "Newest first" },
+  { value: "date_asc", label: "Oldest first" },
+  { value: "type", label: "Type (rule)" },
+];
+
+// created_at is an ISO timestamp; guard against missing/invalid values so a bad
+// row never breaks the sort or the date display.
+function tsOf(f) {
+  const t = new Date(f?.created_at).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+function fmtDate(ts) {
+  if (!ts) return null;
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime())
+    ? null
+    : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+// Local calendar day as YYYY-MM-DD, matching <input type=date> semantics so the
+// range filter compares like-for-like (string compare is correct for this format).
+function dayKey(ts) {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
 export default function Page() {
   const supabase = getSupabase();
   const [session, setSession] = useState(undefined); // undefined = loading
@@ -80,6 +117,12 @@ function Dashboard({ supabase, session }) {
   const [error, setError] = useState(null);
   const [showResolved, setShowResolved] = useState(false);
   const [reviewing, setReviewing] = useState(false);
+  // Sort + filter controls — all client-side over the already-loaded findings.
+  const [sortBy, setSortBy] = useState("severity");
+  const [sevFilter, setSevFilter] = useState("ALL");
+  const [typeFilter, setTypeFilter] = useState("ALL");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   const email = session.user?.email;
 
   const load = useCallback(async () => {
@@ -131,14 +174,58 @@ function Dashboard({ supabase, session }) {
   // "Cleared" = closed (legit / error_corrected). Escalated is NOT cleared — it
   // stays active and visible, because escalating means it needs MORE attention.
   const isCleared = (f) => f.disposition === "legit" || f.disposition === "error_corrected";
-  const visible = (findings || []).filter((f) => showResolved || !isCleared(f));
   const openCount = (findings || []).filter((f) => f.disposition === "open").length;
   const escalatedCount = (findings || []).filter((f) => f.disposition === "escalated").length;
-  // Known severities first, then any unexpected ones, so nothing is counted-but-hidden.
-  const severityGroups = [
+
+  // Filter dropdown options, derived from the data so nothing is offered that
+  // can't appear — and any unexpected severity still shows up rather than hiding.
+  const sevOptions = [
     ...SEVERITIES,
-    ...[...new Set(visible.map((f) => f.severity))].filter((s) => !SEVERITIES.includes(s)),
+    ...[...new Set((findings || []).map((f) => f.severity))]
+      .filter((s) => s && !SEVERITIES.includes(s)),
   ];
+  const typeOptions = [
+    ...new Set((findings || []).map((f) => f.rule_id).filter(Boolean)),
+  ].sort();
+
+  const filtersActive =
+    sevFilter !== "ALL" || typeFilter !== "ALL" || !!fromDate || !!toDate;
+  const clearFilters = () => {
+    setSevFilter("ALL"); setTypeFilter("ALL"); setFromDate(""); setToDate("");
+  };
+
+  // Filter → sort pipeline. The "show cleared" toggle gates first (its result is
+  // the denominator for the "X of Y" count); the new controls then narrow by
+  // criticality, type, and date window on top of that.
+  const gated = (findings || []).filter((f) => showResolved || !isCleared(f));
+  const filtered = gated.filter((f) => {
+    if (sevFilter !== "ALL" && f.severity !== sevFilter) return false;
+    if (typeFilter !== "ALL" && f.rule_id !== typeFilter) return false;
+    if (fromDate || toDate) {
+      const k = dayKey(f.created_at);
+      if (!k) return false;                 // no date → can't fall inside a window
+      if (fromDate && k < fromDate) return false;
+      if (toDate && k > toDate) return false;
+    }
+    return true;
+  });
+  // The default "severity" sort reproduces the previous grouped-by-severity order
+  // exactly (severity rank, then newest first), so a single flat list covers every
+  // sort mode — no grouped/flat branch, which also keeps the card list mounted
+  // (and in-progress note text intact) across sort changes.
+  const sorted = [...filtered].sort((a, b) => {
+    switch (sortBy) {
+      case "date_desc": return tsOf(b) - tsOf(a);
+      case "date_asc": return tsOf(a) - tsOf(b);
+      case "type":
+        return (a.rule_id || "").localeCompare(b.rule_id || "")
+          || sevRank(a.severity) - sevRank(b.severity)
+          || tsOf(b) - tsOf(a);
+      case "severity":
+      default:
+        return sevRank(a.severity) - sevRank(b.severity) || tsOf(b) - tsOf(a);
+    }
+  });
 
   return (
     <div className="wrap">
@@ -181,25 +268,66 @@ function Dashboard({ supabase, session }) {
             <button className="link" onClick={load}>Refresh</button>
           </div>
 
-          {visible.length === 0 && (
+          <div className="controls">
+            <label className="ctl">
+              <span>Sort</span>
+              <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+                {SORTS.map((s) => (
+                  <option key={s.value} value={s.value}>{s.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="ctl">
+              <span>Criticality</span>
+              <select value={sevFilter} onChange={(e) => setSevFilter(e.target.value)}>
+                <option value="ALL">All</option>
+                {sevOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </label>
+            <label className="ctl">
+              <span>Type</span>
+              <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                <option value="ALL">All</option>
+                {typeOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </label>
+            <label className="ctl">
+              <span>From</span>
+              <input type="date" value={fromDate} max={toDate || undefined}
+                onChange={(e) => setFromDate(e.target.value)} />
+            </label>
+            <label className="ctl">
+              <span>To</span>
+              <input type="date" value={toDate} min={fromDate || undefined}
+                onChange={(e) => setToDate(e.target.value)} />
+            </label>
+            {filtersActive && (
+              <>
+                <button className="link" onClick={clearFilters}>Clear filters</button>
+                <span className="muted showing">{sorted.length} of {gated.length}</span>
+              </>
+            )}
+          </div>
+
+          {sorted.length === 0 && (
             <div className="card muted">
-              No {showResolved ? "" : "active "}findings. They appear here after a run with
-              <code> --store supabase</code>.
+              {filtersActive ? (
+                "No findings match the current filters."
+              ) : showResolved ? (
+                "No findings."
+              ) : (
+                <>No active findings. They appear here after a run with
+                  <code> --store supabase</code>.</>
+              )}
             </div>
           )}
 
-          {severityGroups.map((sev) => {
-            const group = visible.filter((f) => f.severity === sev);
-            if (!group.length) return null;
-            return (
-              <section key={sev}>
-                {group.map((f) => (
-                  <FindingCard key={f.fingerprint} f={f} onDisposition={disposition}
-                    locked={reviewing} />
-                ))}
-              </section>
-            );
-          })}
+          <section>
+            {sorted.map((f) => (
+              <FindingCard key={f.fingerprint} f={f} onDisposition={disposition}
+                locked={reviewing} />
+            ))}
+          </section>
         </>
       )}
     </div>
@@ -218,6 +346,7 @@ function FindingCard({ f, onDisposition, locked }) {
   // Only legit / error_corrected are "cleared" (dim + hidden by default). Escalated
   // stays active: full opacity, still actionable, just badged as escalated.
   const cleared = f.disposition === "legit" || f.disposition === "error_corrected";
+  const when = fmtDate(f.created_at);
   return (
     <div className={`card ${cleared ? "resolved" : ""}`}>
       <div className="row">
@@ -228,6 +357,7 @@ function FindingCard({ f, onDisposition, locked }) {
           <span className="tag-updated">updated from your feedback</span>
         )}
         <div className="spacer" />
+        {when && <span className="when">{when}</span>}
         <span className={`disp ${f.disposition}`}>{f.disposition}</span>
       </div>
 
