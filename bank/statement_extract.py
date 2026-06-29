@@ -409,25 +409,29 @@ def first_service_summary_totals(pages: list[list[dict]]) -> dict:
 
 
 def first_service_self_check(frame: pd.DataFrame, expected: dict, tol: float = 0.01) -> list[str]:
-    """Compare parsed credit/debit sums to the statement's printed totals; return a
-    list of human-readable mismatch messages (empty when it reconciles). Credits are
-    positive rows, debits negative."""
+    """Compare parsed credit/debit sums AND row counts to the statement's printed
+    control totals; return a list of human-readable mismatch messages (empty when it
+    reconciles). Checking the count too catches a parse that hits the right total
+    with the wrong number of rows (a missed line offset by a duplicated one).
+    Credits are positive rows, debits negative."""
     msgs: list[str] = []
     credits, debits = frame[frame["amount"] > 0], frame[frame["amount"] < 0]
-    got_credit, got_debit = round(credits["amount"].sum(), 2), round(-debits["amount"].sum(), 2)
-    if expected.get("credit_total") is not None and abs(got_credit - expected["credit_total"]) > tol:
-        msgs.append(f"credits parsed {got_credit:,.2f} ({len(credits)}) vs printed "
-                    f"{expected['credit_total']:,.2f} ({expected.get('credit_count')})")
-    if expected.get("debit_total") is not None and abs(got_debit - expected["debit_total"]) > tol:
-        msgs.append(f"debits parsed {got_debit:,.2f} ({len(debits)}) vs printed "
-                    f"{expected['debit_total']:,.2f} ({expected.get('debit_count')})")
+    for side, rows, total in (("credit", credits, round(credits["amount"].sum(), 2)),
+                              ("debit", debits, round(-debits["amount"].sum(), 2))):
+        exp_total, exp_count = expected.get(f"{side}_total"), expected.get(f"{side}_count")
+        if exp_total is None:
+            continue
+        if abs(total - exp_total) > tol or (exp_count is not None and len(rows) != exp_count):
+            msgs.append(f"do the parsed {side}s ({total:,.2f}, {len(rows)} rows) match the "
+                        f"statement's printed {exp_total:,.2f} ({exp_count})?")
     return msgs
 
 
 def _read_first_service_pdf(path: str | Path) -> pd.DataFrame:
     """Open a First Service Bank PDF and feed its word boxes to the pure parser.
-    Logs a warning if the parsed sums don't reconcile to the statement's printed
-    control totals — a loud signal that a statement parsed incompletely."""
+    Prints a warning to the run log (matching the ingest pipeline's diagnostics) if
+    the parsed sums or row counts don't reconcile to the statement's printed control
+    totals — a loud signal that a statement parsed incompletely."""
     try:
         import pdfplumber  # lazy: optional dependency
     except ImportError as exc:  # pragma: no cover - exercised only without the dep
@@ -440,8 +444,8 @@ def _read_first_service_pdf(path: str | Path) -> pd.DataFrame:
     frame = parse_first_service_words(pages)
     mismatches = first_service_self_check(frame, first_service_summary_totals(pages))
     if mismatches:
-        print(f"  ! Statement parse self-check failed for {Path(path).name} — "
-              "did not reconcile to printed totals: " + "; ".join(mismatches))
+        print(f"  ! Statement self-check for {Path(path).name} did not reconcile to the "
+              "printed control totals: " + "; ".join(mismatches))
     return frame
 
 
