@@ -31,9 +31,12 @@ accounts:
     statement_glob: "hines-homes/operating/*.pdf"
     account_number_env: HINES_HOMES_OPERATING_ACCT
     sharepoint_folder: "Personal Folders/Brandon/Claude Code/acct-wizard/HinesHomes/Bank"
-    # Cancelled-check images are embedded in the same First Service Bank PDF
-    # ("Images: 92"); a later slice will read them from the statement itself, so
-    # no separate check_images folder is configured yet.
+    # Cancelled-check images are embedded in the First Service Bank statement PDF
+    # itself ("Images: 92"). `source: statement_pdf` renders each check face out of
+    # the statement (keyed by check number) and feeds the T4-03/04/05 vision reads —
+    # no separate image files to sync. Needs --check-images auto/on + ANTHROPIC_API_KEY.
+    check_images:
+      source: statement_pdf
 
   # --- Templates for accounts coming online later (commented out) ------------
   #

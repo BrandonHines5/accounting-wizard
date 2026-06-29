@@ -12,7 +12,7 @@ import pytest
 
 from bank.statement_extract import (extract_pdf, normalize_register,
                                     parse_first_service_words, PDF_LAYOUTS,
-                                    _fsb_year_for)
+                                    _fsb_year_for, first_service_check_anchors)
 
 # Column x0 positions copied from the real layout (see statement_extract geometry).
 _CRED_DESC_X0, _DEBIT_DESC_X0 = 172, 188
@@ -145,12 +145,12 @@ def test_year_wrap_for_prior_month():
 
 
 def test_parser_output_feeds_normalize_register(registry, parsed):
-    out = normalize_register(parsed, entity_id="alpha", account_number="610000452",
+    out = normalize_register(parsed, entity_id="alpha", account_number="123456789",
                              known_entity_ids={e.id for e in registry}, salt="")
     assert len(out) == 13
     # the raw account number is hashed, never present in any cell
     assert not out.astype("string").apply(
-        lambda c: c.str.contains("610000452", na=False)).to_numpy().any()
+        lambda c: c.str.contains("123456789", na=False)).to_numpy().any()
 
 
 def test_extract_pdf_unknown_layout_raises(registry, tmp_path):
@@ -159,6 +159,28 @@ def test_extract_pdf_unknown_layout_raises(registry, tmp_path):
     with pytest.raises(ValueError, match="Unknown PDF statement layout"):
         extract_pdf(f, entity_id="alpha", account_number="1",
                     known_entity_ids={e.id for e in registry}, layout="nope")
+
+
+def test_check_image_anchors_match_caption_triples():
+    # An image-page row with two columns: left has the usual date+check+amount
+    # caption; right has check+amount with NO leading date (the 8106 case).
+    row = Page()
+    row.row(("04/28/2026", 78), ("8096", 138), ("$26,000.00", 175),
+            ("8106", 410), ("$64.70", 470))
+    anchors = first_service_check_anchors(row.words)
+    by_check = {cn: (round(x0), round(top)) for cn, x0, top in anchors}
+    assert set(by_check) == {"8096", "8106"}
+    assert by_check["8096"][0] < 310          # left column
+    assert by_check["8106"][0] >= 310         # right column (no date prefix needed)
+
+
+def test_check_image_anchors_ignore_non_captions():
+    # Garbled check-face text and a 9-digit account number must not look like a
+    # caption (check numbers are 3–6 digits; the amount token must be clean).
+    row = Page()
+    row.row(("Account", 60), ("Number:", 110), ("123456789", 200), ("$720.00", 300))
+    row.row(("Nineteen", 60), ("Thousand", 120), ("and", 200), ("20/100", 240))
+    assert first_service_check_anchors(row.words) == []
 
 
 def test_extract_pdf_dispatches_to_layout(registry, tmp_path, monkeypatch):

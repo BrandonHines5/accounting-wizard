@@ -172,7 +172,7 @@ def _run_tier4(args, registry, config, transactions, known_ids: set[str]) -> lis
           f"{bank['entity_id'].nunique()} account-entities …")
     findings = reconcile_all(transactions, bank, registry, config)
     print(f"  {len(findings)} reconciliation findings")
-    findings += _run_check_images(args, registry, config, bank, transactions, accounts)
+    findings += _run_check_images(args, registry, config, bank, transactions, accounts, bank_dir)
     if args.store == "supabase":
         _persist_bank(bank, args.supabase_schema)
     return findings
@@ -189,7 +189,47 @@ def _make_check_reader(mode: str, model: str | None):
     return AnthropicCheckReader(model=model or MODEL)
 
 
-def _check_image_source_factory(args):
+def _statement_pdf_check_source(account, bank_dir):
+    """Build a check-image source from the account's own statement PDF(s): render the
+    embedded cancelled-check faces (keyed by check number). Returns None — skipping
+    the account, never erroring — if the layout is missing or no images are found."""
+    from bank.check_image_source import PdfStatementCheckImages
+    from bank.statement_extract import extract_check_images
+
+    if not account.layout:
+        print(f"  Check-image reads skipped for {account.entity_id}/{account.label} "
+              "(statement_pdf source needs a `layout`).")
+        return None
+    images: dict[str, bytes] = {}
+    for path in sorted(Path(bank_dir).glob(account.statement_glob)):
+        try:
+            images.update(extract_check_images(path, layout=account.layout))
+        except Exception as exc:  # noqa: BLE001 — one bad statement shouldn't sink reads
+            print(f"  Check-image extraction failed for {path.name}: {exc}")
+    if not images:
+        print(f"  Check-image reads skipped for {account.entity_id}/{account.label} "
+              "(no embedded check images found in the statement).")
+        return None
+    print(f"  Extracted {len(images)} check image(s) from "
+          f"{account.entity_id}/{account.label} statement(s)")
+    return PdfStatementCheckImages(images, label=account.label)
+
+
+def _check_image_source_factory(args, bank_dir):
+    """Return a callable `account -> CheckImageSource | None`. An account configured
+    with `check_images.source: statement_pdf` reads its cancelled-check images out of
+    its own statement; otherwise images come from the local sync / SharePoint."""
+    file_source = _file_check_image_source_factory(args)
+
+    def make_source(account):
+        if (account.check_images or {}).get("source") == "statement_pdf":
+            return _statement_pdf_check_source(account, bank_dir)
+        return file_source(account) if file_source is not None else None
+
+    return make_source
+
+
+def _file_check_image_source_factory(args):
     """Return a callable `account -> CheckImageSource`, or None to skip image reads
     (missing local dir, or graph selected without GRAPH_* credentials)."""
     def cfg(account):
@@ -221,7 +261,7 @@ def _check_image_source_factory(args):
         label=account.label)
 
 
-def _run_check_images(args, registry, config, bank, transactions, accounts) -> list:
+def _run_check_images(args, registry, config, bank, transactions, accounts, bank_dir) -> list:
     """Read cancelled-check images for accounts that configure them and emit
     T4-03/04/05 findings. Skips cleanly when reads are off, no account configures
     images, no reader is available, or the image source isn't reachable."""
@@ -231,9 +271,7 @@ def _run_check_images(args, registry, config, bank, transactions, accounts) -> l
     reader = _make_check_reader(args.check_images, args.check_image_model)
     if reader is None:
         return []
-    make_source = _check_image_source_factory(args)
-    if make_source is None:
-        return []
+    make_source = _check_image_source_factory(args, bank_dir)
 
     from bank.check_images import verify_check_images
     from core.fingerprint import account_fingerprint
@@ -244,6 +282,8 @@ def _run_check_images(args, registry, config, bank, transactions, accounts) -> l
         if not mask.any():
             continue
         source = make_source(account)
+        if source is None:
+            continue
         enriched, account_findings = verify_check_images(
             source.attach(bank[mask]), transactions, reader, registry, config,
             fetch_front=source.read_front, fetch_back=source.read_back,

@@ -383,3 +383,83 @@ def _read_first_service_pdf(path: str | Path) -> pd.DataFrame:
 PDF_LAYOUTS = {
     "first_service_bank": _read_first_service_pdf,
 }
+
+
+# --------------------------------------------------------------------------- #
+# First Service Bank — embedded cancelled-check images (Tier 4 T4-03/04/05)
+# --------------------------------------------------------------------------- #
+# The statement's image pages lay out cancelled checks in a 2-column grid, each
+# cell captioned `[date] check_no $amount` (the date prefix is sometimes absent).
+# Each check face is a vector+raster composite, not one clean embedded image, so we
+# anchor on the caption and RENDER the grid cell above it to a JPEG — far more
+# reliable than pulling the XObjects. The anchor logic is pure (operates on word
+# boxes) and unit-tested; only the render step needs the PDF.
+_FSB_IMG_CHECKNO_RE = re.compile(r"^\d{3,6}$")
+_FSB_IMG_AMT_RE = re.compile(r"^\$[\d,]+\.\d{2}$")
+_FSB_IMG_COL_SPLIT = 310            # check-no x0 below this → left column, else right
+_FSB_IMG_COL_LEFT = (70, 333)       # (x0, x1) crop band for the left column
+_FSB_IMG_COL_RIGHT = (333, 602)
+_FSB_IMG_CELL_TOP = -102            # cell spans from caption_top-102 (the face) …
+_FSB_IMG_CELL_BOT = 9              # … to caption_top+9 (just past the caption)
+_FSB_IMG_RES = 200                  # render DPI
+
+
+def first_service_check_anchors(words: list[dict]) -> list[tuple[str, float, float]]:
+    """(check_no, x0, top) for each `check_no $amount` caption on one image page.
+
+    Pure: `words` are pdfplumber word boxes for the page. The check number is the
+    token immediately left of a `$amount` token; its x0 selects the grid column and
+    its top anchors the cell. Captions with and without a leading date both match."""
+    out: list[tuple[str, float, float]] = []
+    for row in _fsb_cluster_rows(words):
+        for b, c in zip(row, row[1:]):
+            if _FSB_IMG_CHECKNO_RE.match(b["text"]) and _FSB_IMG_AMT_RE.match(c["text"]):
+                out.append((b["text"], b["x0"], b["top"]))
+    return out
+
+
+def _render_first_service_check_images(path: str | Path) -> dict[str, bytes]:
+    """Render each cancelled-check cell of a First Service Bank PDF to a JPEG,
+    keyed by check number. pdfplumber + its renderer (pypdfium2) and Pillow are
+    optional, imported lazily like the other Tier 4 adapters."""
+    try:
+        import io
+
+        import pdfplumber  # lazy: optional dependency
+    except ImportError as exc:  # pragma: no cover - exercised only without the dep
+        raise ImportError(
+            "Check-image extraction needs pdfplumber — `pip install pdfplumber`.") from exc
+    images: dict[str, bytes] = {}
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            words = page.extract_words(x_tolerance=1, keep_blank_chars=False)
+            for check_no, x0, top in first_service_check_anchors(words):
+                col_x0, col_x1 = (_FSB_IMG_COL_LEFT if x0 < _FSB_IMG_COL_SPLIT
+                                  else _FSB_IMG_COL_RIGHT)
+                bbox = (col_x0, max(0, top + _FSB_IMG_CELL_TOP),
+                        min(page.width, col_x1), min(page.height, top + _FSB_IMG_CELL_BOT))
+                pim = page.crop(bbox).to_image(resolution=_FSB_IMG_RES)
+                buf = io.BytesIO()
+                # pypdfium2 renders in palette mode; JPEG needs RGB.
+                pim.original.convert("RGB").save(buf, format="JPEG", quality=85)
+                images[check_no] = buf.getvalue()
+    return images
+
+
+# Per-bank renderers that pull cancelled-check images out of the statement PDF:
+# path -> {check_no: jpeg_bytes}.
+PDF_CHECK_IMAGE_LAYOUTS = {
+    "first_service_bank": _render_first_service_check_images,
+}
+
+
+def extract_check_images(path: str | Path, *, layout: str) -> dict[str, bytes]:
+    """Extract cancelled-check images embedded in a PDF statement, keyed by check
+    number. `layout` selects the per-bank renderer (PDF_CHECK_IMAGE_LAYOUTS)."""
+    try:
+        renderer = PDF_CHECK_IMAGE_LAYOUTS[layout]
+    except KeyError:
+        raise ValueError(
+            f"No embedded check-image renderer for layout {layout!r} — known: "
+            f"{sorted(PDF_CHECK_IMAGE_LAYOUTS)}")
+    return renderer(path)

@@ -108,6 +108,33 @@ class LocalCheckImages(CheckImageSource):
         return path.read_bytes() if path.exists() else None
 
 
+class PdfStatementCheckImages(CheckImageSource):
+    """Cancelled-check images extracted from the statement PDF itself.
+
+    First Service Bank embeds the cancelled-check faces in the statement (no
+    separate image files to sync), so `bank.statement_extract.extract_check_images`
+    renders them to a {check_no: jpeg_bytes} map and this source serves them by
+    check number. Only fronts are present, so endorsement (back) reads (T4-05) are
+    naturally skipped. The locator is the check number; nothing is written to disk."""
+
+    def __init__(self, images: dict[str, bytes], *, label: str = "") -> None:
+        # front pattern is the bare check number; the back pattern can never resolve
+        # (no endorsement images in the statement) so read_back always yields None.
+        super().__init__(front_pattern="{check_no}",
+                         back_pattern="\x00noback\x00{check_no}", label=label)
+        self.images = images
+
+    @property
+    def media_type(self) -> str:
+        return "image/jpeg"
+
+    def _locator(self, filename: str) -> str:
+        return filename
+
+    def _load(self, locator: str) -> bytes | None:
+        return self.images.get(locator)
+
+
 def graph_app_token() -> str:
     """App-only Microsoft Graph token via client-credentials (msal, lazy import).
     Reads GRAPH_TENANT_ID / GRAPH_CLIENT_ID / GRAPH_CLIENT_SECRET."""
