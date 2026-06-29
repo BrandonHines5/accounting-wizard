@@ -13,9 +13,11 @@
 //     by the rules / offline Tier 3 layer. apply_feedback_update only writes
 //     ai_assessment + suggested_disposition, so it can't downgrade past a floor.
 //   - Only updates OPEN findings, and only those the feedback genuinely bears on.
-//   - A missing ANTHROPIC_API_KEY is a misconfiguration: returns 503, not a silent
-//     no-op. The disposition + reason are already saved by set_finding_disposition
-//     before this runs, so only the AI re-review is affected.
+//   - A missing ANTHROPIC_API_KEY is a clean no-op (HTTP 200, {skipped}): the
+//     disposition + reason are already saved by set_finding_disposition before this
+//     runs, so the optional AI re-review must never fail the reviewer's action.
+//     Genuine upstream failures (Anthropic error/timeout, DB error) still surface
+//     as non-2xx; the UI shows those as a soft, non-blocking notice.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -58,8 +60,12 @@ Deno.serve(async (req) => {
     if (!allow) return json({ error: "not authorized" }, 403);
 
     const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
-    // A missing key is a server misconfiguration, not a successful no-op — surface it.
-    if (!apiKey) return json({ error: "anthropic_api_key_not_configured" }, 503);
+    // No key configured → skip the AI re-review cleanly (HTTP 200). The disposition
+    // and reason were already saved by set_finding_disposition before this ran, so a
+    // missing key must not fail the reviewer's action — the live re-review is an
+    // optional enhancement (see review-ui/README.md). Set ANTHROPIC_API_KEY as an
+    // edge-function secret to enable it.
+    if (!apiKey) return json({ updated: 0, skipped: "anthropic_api_key_not_configured" });
 
     // The human feedback corpus (dispositioned findings that carry a reason) and the
     // still-open findings to re-review against it, via the public RPCs. Propagate
