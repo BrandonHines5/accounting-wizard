@@ -192,7 +192,12 @@ def _make_check_reader(mode: str, model: str | None):
 def _statement_pdf_check_source(account, bank_dir):
     """Build a check-image source from the account's own statement PDF(s): render the
     embedded cancelled-check faces (keyed by check number). Returns None — skipping
-    the account, never erroring — if the layout is missing or no images are found."""
+    the account, never erroring — if the layout is missing or no images are found.
+
+    With `check_images.latest_only`, images are read from only the most recent
+    statement file (statement filenames sort chronologically: EStatement_..._YYYYMMDD),
+    so a multi-month backfill reconciles every statement but vision-reads just the
+    latest month's checks."""
     from bank.check_image_source import PdfStatementCheckImages
     from bank.statement_extract import extract_check_images
 
@@ -200,18 +205,21 @@ def _statement_pdf_check_source(account, bank_dir):
         print(f"  Check-image reads skipped for {account.entity_id}/{account.label} "
               "(statement_pdf source needs a `layout`).")
         return None
+    paths = sorted(Path(bank_dir).glob(account.statement_glob))
+    if account.check_images.get("latest_only") and paths:
+        paths = paths[-1:]
     images: dict[str, bytes] = {}
-    for path in sorted(Path(bank_dir).glob(account.statement_glob)):
+    for path in paths:
         try:
             images.update(extract_check_images(path, layout=account.layout))
         except Exception as exc:  # noqa: BLE001 — one bad statement shouldn't sink reads
-            print(f"  Check-image extraction failed for {path.name}: {exc}")
+            print(f"  Check-image extraction skipped for {path.name}: {exc}")
     if not images:
         print(f"  Check-image reads skipped for {account.entity_id}/{account.label} "
               "(no embedded check images found in the statement).")
         return None
     print(f"  Extracted {len(images)} check image(s) from "
-          f"{account.entity_id}/{account.label} statement(s)")
+          f"{len(paths)} statement(s) for {account.entity_id}/{account.label}")
     return PdfStatementCheckImages(images, label=account.label)
 
 
