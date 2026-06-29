@@ -12,7 +12,8 @@ import pytest
 
 from bank.statement_extract import (extract_pdf, normalize_register,
                                     parse_first_service_words, PDF_LAYOUTS,
-                                    _fsb_year_for, first_service_check_anchors)
+                                    _fsb_year_for, first_service_check_anchors,
+                                    first_service_self_check)
 
 # Column x0 positions copied from the real layout (see statement_extract geometry).
 _CRED_DESC_X0, _DEBIT_DESC_X0 = 172, 188
@@ -159,6 +160,34 @@ def test_extract_pdf_unknown_layout_raises(registry, tmp_path):
     with pytest.raises(ValueError, match="Unknown PDF statement layout"):
         extract_pdf(f, entity_id="alpha", account_number="1",
                     known_entity_ids={e.id for e in registry}, layout="nope")
+
+
+def test_split_check_number_is_reassembled():
+    # A check number rendered with an internal space ('7' '568') must reassemble to
+    # 7568 from its sub-column — not be read as check '7' with '568' polluting the
+    # amount into $568,400,000 (the Oct-2025 bug).
+    p = Page()
+    p.row(("Statement", 50), ("Date:", 120), ("10-31-25", 200))
+    p.row(("Checks", 50))
+    p.row(("Date", 50), ("Check", 90), ("No", 115), ("Amount", 150),
+          ("Date", 234), ("Check", 274), ("No", 299), ("Amount", 334),
+          ("Date", 417), ("Check", 457), ("No", 482), ("Amount", 517))
+    p.row(("10/14", 50), ("7166", 99), ("720.00", 162),
+          ("10/15", 234), ("8053", 283), ("574.76", 345),
+          ("10/30", 417), ("7", 467), ("568", 480), ("400,000.00", 517))
+    checks = parse_first_service_words([p.words]).set_index("check_no")["amount"]
+    assert checks["7568"] == -400000.00      # reassembled, amount intact
+    assert "7" not in checks.index           # no bogus single-digit check
+
+
+def test_self_check_flags_total_mismatch():
+    frame = pd.DataFrame([{"amount": 100.0}, {"amount": -50.0}])
+    # debits don't reconcile to the printed total → one message
+    msgs = first_service_self_check(frame, {"credit_total": 100.0, "credit_count": 1,
+                                            "debit_total": 999.0, "debit_count": 5})
+    assert len(msgs) == 1 and "debits" in msgs[0]
+    # matching totals → no messages
+    assert first_service_self_check(frame, {"credit_total": 100.0, "debit_total": 50.0}) == []
 
 
 def test_legacy_layout_is_rejected():

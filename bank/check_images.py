@@ -148,6 +148,7 @@ def _review_one(row, read: CheckRead, transactions, amount_tol, min_conf) -> lis
     check_no = _norm_check(row["check_no"])
     book = _book_check(transactions, entity_id, check_no)
     refs = [str(book["source_id"])] if book is not None else []
+    cleared = str(row["date"].date()) if pd.notna(row.get("date")) else None
     out: list[Finding] = []
 
     # Unreadable image → review queue, never a false assertion of (mis)match.
@@ -158,7 +159,7 @@ def _review_one(row, read: CheckRead, transactions, amount_tol, min_conf) -> lis
                       f"(confidence {read.confidence:.0f}% < {min_conf:.0f}%). Pull the image "
                       "and confirm the payee and amount manually."),
             details={"check_no": check_no, "read_confidence": float(read.confidence),
-                     "image_review": "low_confidence", "bank_ref": _bank_ref(row)},
+                     "image_review": "low_confidence", "bank_ref": _bank_ref(row), "cleared_date": cleared},
             transactions=refs))
         return out
 
@@ -169,7 +170,7 @@ def _review_one(row, read: CheckRead, transactions, amount_tol, min_conf) -> lis
                 question=(f"Check #{check_no} is payable to '{read.payee}' on the image but the "
                           f"books record vendor '{book['vendor_name']}'. Who was actually paid?"),
                 details={"check_no": check_no, "read_payee": read.payee,
-                         "recorded_vendor": book["vendor_name"], "bank_ref": _bank_ref(row)},
+                         "recorded_vendor": book["vendor_name"], "bank_ref": _bank_ref(row), "cleared_date": cleared},
                 transactions=refs))
         recorded = abs(float(book["amount"]))
         if read.amount is not None and abs(float(read.amount) - recorded) > amount_tol:
@@ -179,7 +180,7 @@ def _review_one(row, read: CheckRead, transactions, amount_tol, min_conf) -> lis
                           f"books record ${recorded:,.2f}. Was the check altered after signing?"),
                 details={"check_no": check_no, "read_amount": float(read.amount),
                          "recorded": recorded, "source": "check_image",
-                         "bank_ref": _bank_ref(row)},
+                         "bank_ref": _bank_ref(row), "cleared_date": cleared},
                 transactions=refs))
 
     if read.endorsement_flags:
@@ -190,7 +191,7 @@ def _review_one(row, read: CheckRead, transactions, amount_tol, min_conf) -> lis
                       "and that the endorsement is authorized."),
             details={"check_no": check_no, "endorsement": read.endorsement,
                      "endorsement_flags": list(read.endorsement_flags),
-                     "bank_ref": _bank_ref(row)},
+                     "bank_ref": _bank_ref(row), "cleared_date": cleared},
             transactions=refs))
     return out
 
