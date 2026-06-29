@@ -182,6 +182,8 @@ def test_split_check_number_is_reassembled():
 
 
 def test_checks_grid_parses_at_a_shifted_offset():
+    """The 3-up checks grid still parses when its columns are shifted to a different
+    absolute offset — the adaptivity that the April-tuned x-bands lacked."""
     # The same 3-up grid shifted right 120pt (a different statement's margin/column
     # geometry). Cells are anchored on their date token and the number/amount split at
     # the widest gap, so there is no hardcoded column x to drift out from under — the
@@ -204,6 +206,8 @@ def test_checks_grid_parses_at_a_shifted_offset():
 
 
 def test_checks_grid_parses_a_two_column_layout():
+    """A 2-up checks grid parses correctly — the column count is inferred from the
+    date anchors, with no assumption of three groups."""
     # A statement whose checks grid is only 2 columns wide. The column count comes
     # from the date anchors, so nothing about "three groups" is assumed; an odd final
     # check sitting alone in the left column is captured too.
@@ -222,7 +226,11 @@ def test_checks_grid_parses_a_two_column_layout():
 
 
 def test_split_check_amount_uses_widest_gap():
+    """The check-number/amount split lands at the widest x-gap and validates both
+    sides — covering both fragments split, a comma rendered as its own token, and a
+    cell with no valid split."""
     def w(text, x0):
+        """A minimal word box at the given x0 (x1/top are unused by the split)."""
         return {"text": text, "x0": x0, "x1": x0 + 10, "top": 0.0}
     # both number and amount fragmented: '7' '568' | '791.' '15' → ('7568', '791.15')
     assert _fsb_split_check_amount(
@@ -235,6 +243,8 @@ def test_split_check_amount_uses_widest_gap():
 
 
 def test_parse_diag_is_populated_and_leaks_no_data():
+    """The optional diag dict is filled with structural counters, and its summary
+    reports counts only — never an amount or a check number."""
     diag = {}
     parse_first_service_words(_statement_pages(), diag=diag)
     assert diag["pages"] == 2
