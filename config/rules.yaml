@@ -19,6 +19,14 @@ defaults:
   # a direct manual check to them is then flagged as a workflow bypass.
   ap_vendor_established_min: 3
 
+  # T1-09: reconcile each payment to a bill (or a sum of bills) by amount, per
+  # vendor. amount_tolerance: cents of slack on a match; lookback_days: how far
+  # before a payment a matching bill may be dated; max_combo: most invoices one
+  # payment (batch check) may cover in the sum match.
+  invoice_match_amount_tolerance: 0.01
+  invoice_match_lookback_days: 120
+  invoice_match_max_combo: 4
+
   # T1-07: weekdays AP batches normally run (0=Mon … 6=Sun).
   # Empty = rule disabled. Hines data shows Wednesday-dominant cadence
   # (~60%) — set to [2] only if strict batch days become policy.

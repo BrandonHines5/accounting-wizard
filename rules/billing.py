@@ -1,7 +1,7 @@
-"""Billing & payments rules (T1-01 … T1-08).
+"""Billing & payments rules (T1-01 … T1-09).
 
-Implemented here: T1-01, T1-02, T1-04, T1-07, T1-08 — these run on QB data alone.
-T1-03/05/06 need Adaptive/Buildertrend ingest and are declared pending.
+Implemented here: T1-01, T1-02, T1-04, T1-07, T1-08, T1-09 — these run on QB data
+alone. T1-03/05/06 need Adaptive/Buildertrend ingest and are declared pending.
 
 Amounts are evaluated as absolute values: QB exports disbursements as
 negatives, bills as positives.
@@ -9,6 +9,7 @@ negatives, bills as positives.
 from __future__ import annotations
 
 import re
+from itertools import combinations
 
 import pandas as pd
 
@@ -215,6 +216,87 @@ def manual_check_on_ap_vendor(ctx: RunContext):
                     details={"vendor": vendor, "amount": float(row["amount"]),
                              "check_no": row["check_no"]},
                     transactions=[str(row["source_id"])],
+                )
+
+
+@rule("T1-09", "Payment without a matching invoice",
+      requires="QB Vendor Transaction Detail (bills + bill payments)",
+      notes="Amount-based reconciliation: QB exports don't link a payment to the "
+            "bill(s) it pays (a payment row's Num is its check no., not the invoice), "
+            "so each payment is matched to one bill or a sum of bills by amount, per "
+            "vendor. Progress/partial payments (below an outstanding invoice) are not "
+            "flagged. Strengthened by Adaptive approval data once ingested (T1-03).")
+def payment_without_matching_invoice(ctx: RunContext):
+    """For each invoice/AP vendor (one with at least one bill), every payment should
+    tie to a bill — or, for a batch check, to a SUM of bills. Flag payments that match
+    no single invoice and no combination of invoices and exceed the vendor's
+    outstanding invoices (unsupported payment, overpayment, or double-pay)."""
+    tol = float(ctx.config.param("invoice_match_amount_tolerance"))
+    lookback = int(ctx.config.param("invoice_match_lookback_days"))
+    max_combo = int(ctx.config.param("invoice_match_max_combo"))
+    tol_c = round(tol * 100)
+    for entity_id in ctx.active_entity_ids:
+        df = ctx.entity_transactions(entity_id)
+        df = df[df["vendor_name"].notna()]
+        for vendor, grp in df.groupby("vendor_name"):
+            bills = grp[(grp["txn_type"] == "bill") & grp["amount"].notna()
+                        & grp["date"].notna()]
+            if bills.empty:
+                continue  # not an invoice/AP vendor — nothing to reconcile against
+            # Open bills, consumed (used) as payments are matched to them. Cents avoids
+            # float-equality pitfalls in the sum matching.
+            open_bills = [
+                {"cents": round(abs(float(r["amount"])) * 100), "date": r["date"],
+                 "used": False}
+                for _, r in bills.iterrows() if abs(float(r["amount"])) > 0
+            ]
+            pays = grp[grp["txn_type"].isin(AP_TYPES) & grp["amount"].notna()
+                       & grp["date"].notna()].sort_values("date")
+            for _, p in pays.iterrows():
+                pc = round(abs(float(p["amount"])) * 100)
+                if pc <= 0:
+                    continue
+                # Bills available to this payment: unconsumed, dated on/before it
+                # (small grace for entry order), within the lookback window.
+                cands = [b for b in open_bills if not b["used"]
+                         and -5 <= (p["date"] - b["date"]).days <= lookback]
+                # 1) single invoice
+                single = next((b for b in sorted(cands, key=lambda b: (abs(b["cents"] - pc), b["date"]))
+                               if abs(b["cents"] - pc) <= tol_c), None)
+                if single:
+                    single["used"] = True
+                    continue
+                # 2) a combination of invoices (one check paying several bills)
+                recent = sorted(cands, key=lambda b: b["date"], reverse=True)[:12]
+                matched = None
+                for r in range(2, max_combo + 1):
+                    for combo in combinations(recent, r):
+                        if abs(sum(b["cents"] for b in combo) - pc) <= tol_c:
+                            matched = combo
+                            break
+                    if matched:
+                        break
+                if matched:
+                    for b in matched:
+                        b["used"] = True
+                    continue
+                # 3) plausibly a partial/progress payment of an outstanding invoice
+                if any(b["cents"] >= pc - tol_c for b in cands):
+                    continue
+                # 4) ties to no invoice and exceeds outstanding invoices
+                yield Finding(
+                    rule_id="T1-09",
+                    severity=Severity.MEDIUM,
+                    entity_ids=[entity_id],
+                    question=(
+                        f"Payment of ${abs(float(p['amount'])):,.2f} to {vendor} on "
+                        f"{p['date'].date()} doesn't match any invoice or combination of "
+                        f"invoices on file, and exceeds {vendor}'s outstanding invoices. "
+                        "Which bill does it pay?"
+                    ),
+                    details={"vendor": vendor, "amount": abs(float(p["amount"])),
+                             "check_no": p["check_no"]},
+                    transactions=[str(p["source_id"])],
                 )
 
 
