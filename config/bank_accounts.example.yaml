@@ -42,6 +42,28 @@ accounts:
       source: statement_pdf
       latest_only: true
 
+  # Hines Homes second operating account at Bank OZK. Its online-banking export is
+  # an xlsx register with separate Debit/Credit columns. Some checks share numbers
+  # with the First Service account above (different checkbooks, same numbers), so
+  # this account MUST be ingested or those Ozk checks have no statement to match and
+  # mis-reconcile against the other account (the T4-04 "altered check #7946" was
+  # exactly this — it actually cleared Ozk for its booked amount).
+  #   - Set the account number as the HINES_HOMES_OZK_ACCT secret.
+  #   - Drop statements in <bank-dir>/hines-homes/ozk/ (or confirm the SharePoint
+  #     folder below to auto-pull). Confirm the real folder path.
+  - entity_id: hines-homes
+    label: ozk
+    format: xlsx
+    statement_glob: "hines-homes/ozk/*.xlsx"
+    account_number_env: HINES_HOMES_OZK_ACCT
+    sharepoint_folder: "Personal Folders/Brandon/Claude Code/acct-wizard/HinesHomes/OzkStatements"
+    columns:                                   # bank export header -> canonical field
+      date: "Post Date"
+      description: "Description"
+      debit: "Debit"                           # money out (positive magnitude)
+      credit: "Credit"                         # money in (positive magnitude)
+      check_no: "Check"
+
   # --- Templates for accounts coming online later (commented out) ------------
   #
   # A bank that exports the register as CSV (single signed amount column):

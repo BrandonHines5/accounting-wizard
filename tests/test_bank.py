@@ -101,6 +101,26 @@ def test_clean_matches_produce_nothing(findings):
     assert not by_rule(findings, "T4-07")   # no deposit-side findings this slice
 
 
+def test_check_number_collision_across_accounts_pairs_by_amount(registry, config):
+    # Check #7946 exists on two of the entity's accounts: $9,536.70 (Ozk) and
+    # $1,500 (operating). The books carry both. Amount-aware matching pairs each
+    # cleared line to the right entry, so no false T4-04 'altered check' fires —
+    # the real-world Any Y Jurado case.
+    books = pd.DataFrame(
+        [("OZK", "check", "2026-05-29", "Any Y Jurado", 9536.70, "7946"),
+         ("OPS", "check", "2026-05-27", "Other Payee", 1500.00, "7946")],
+        columns=["source_id", "txn_type", "date", "vendor_name", "amount", "check_no"])
+    books["entity_id"] = "alpha"
+    books["date"] = pd.to_datetime(books["date"])
+    rows = [(-9536.70, "2026-05-29", "Withdrawal", "7946"),     # cleared Ozk
+            (-1500.00, "2026-05-28", "CHECK 7946", "7946")]     # cleared operating
+    bank = pd.DataFrame(rows, columns=["amount", "date", "description", "check_no"])
+    bank["entity_id"] = "alpha"
+    bank["account_fingerprint"] = "acct"
+    bank = validate_bank_transactions(bank, {e.id for e in registry})
+    assert reconcile(books, bank, registry, config) == []
+
+
 def _deposit_books() -> pd.DataFrame:
     rows = [
         # source_id, entity_id, txn_type, date, amount
