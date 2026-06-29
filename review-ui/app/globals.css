@@ -10,6 +10,7 @@
   --medium: #3b82f6;
   --info: #6b7280;
   --green: #22c55e;
+  --legend-w: 340px;
 }
 
 * { box-sizing: border-box; }
@@ -103,6 +104,7 @@ input[type=email] {
 .note { font-size: 13px; padding: 10px 12px; border-radius: 8px; margin: 14px 0; }
 .note.ok { background: rgba(34,197,94,.12); color: #86efac; }
 .note.err { background: rgba(239,68,68,.12); color: #fca5a5; }
+.note.warn { background: rgba(245,158,11,.12); color: #fcd9a5; }
 .muted { color: var(--muted); }
 .summary { display: flex; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
 .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 14px; }
@@ -130,3 +132,53 @@ input[type=email] {
 .controls .showing { font-size: 12px; }
 
 .when { color: var(--muted); font-size: 12px; }
+
+/* ── Type legend drawer ───────────────────────────────────────────── */
+.legend {
+  position: fixed; top: 0; right: 0; z-index: 50;
+  width: var(--legend-w); max-width: 88vw; height: 100dvh;
+  display: flex; flex-direction: column;
+  background: var(--panel); border-left: 1px solid var(--border);
+  box-shadow: -10px 0 30px rgba(0,0,0,.4);
+  transform: translateX(100%); transition: transform .18s ease;
+}
+.legend.open { transform: translateX(0); }
+.legend-head {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 14px 14px 18px; border-bottom: 1px solid var(--border);
+}
+.legend-head h2 { margin: 0; font-size: 15px; font-weight: 650; }
+.legend-body { overflow-y: auto; padding: 4px 18px 28px; }
+.legend-intro { font-size: 12px; line-height: 1.45; margin: 12px 0 4px; }
+.legend-group { margin-top: 18px; }
+.legend-group h3 {
+  position: sticky; top: 0; z-index: 1; margin: 0 0 4px; padding: 7px 0;
+  background: var(--panel); color: var(--muted);
+  font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+}
+.legend-item { display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); }
+.legend-id {
+  flex: 0 0 46px; padding-top: 1px; color: #cdd3de;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+}
+.legend-text { min-width: 0; }
+.legend-label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
+.legend-desc { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.legend-count {
+  flex: 0 0 auto; font-size: 11px; font-weight: 600; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 0 7px;
+}
+.legend-foot {
+  font-size: 12px; line-height: 1.45; margin: 22px 0 0; padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.legend-backdrop { position: fixed; inset: 0; z-index: 49; background: rgba(0,0,0,.45); }
+
+/* Wide screens: dock the drawer beside the content (the page gets a right gutter so
+   nothing is covered) and drop the dimming backdrop — it reads as a side panel,
+   not a modal. Narrower screens fall back to the overlay drawer + backdrop. */
+body { transition: padding-right .18s ease; }
+@media (min-width: 1200px) {
+  body.legend-open { padding-right: var(--legend-w); }
+  body.legend-open .legend-backdrop { display: none; }
+}

@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getSupabase } from "../lib/supabaseClient";
+import { RULE_GROUPS, RULE_INFO } from "../lib/ruleLegend";
 
 const DISPOSITIONS = [
   { value: "legit", label: "Legit" },
@@ -28,28 +29,34 @@ const SORTS = [
   { value: "type", label: "Type (rule)" },
 ];
 
-// created_at is an ISO timestamp; guard against missing/invalid values so a bad
-// row never breaks the sort or the date display.
-function tsOf(f) {
-  const t = new Date(f?.created_at).getTime();
-  return Number.isNaN(t) ? 0 : t;
+// The date the UI sorts/filters/shows is the finding's TRANSACTION date — the date
+// of the underlying financial activity — surfaced by list_findings() as `txn_date`,
+// NOT created_at (when the row was added to the system). It's a pure calendar date
+// ("YYYY-MM-DD"), so compare and display it literally: running a date-only value
+// through Date()/local-tz would shift it across midnight in non-UTC zones. Some
+// findings have no underlying transaction (inter-company imbalance, vendor-master
+// hygiene, statistical patterns) → no txn_date → null.
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function dayKeyOf(f) {
+  const d = f?.txn_date;
+  if (!d || typeof d !== "string") return null;
+  const key = d.slice(0, 10);                 // tolerate an ISO datetime, just in case
+  return /^\d{4}-\d{2}-\d{2}$/.test(key) ? key : null;
 }
-function fmtDate(ts) {
-  if (!ts) return null;
-  const d = new Date(ts);
-  return Number.isNaN(d.getTime())
-    ? null
-    : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+function fmtDay(key) {
+  if (!key) return null;
+  const [y, m, d] = key.split("-").map(Number);
+  return m >= 1 && m <= 12 ? `${MONTHS[m - 1]} ${d}, ${y}` : null;
 }
-// Local calendar day as YYYY-MM-DD, matching <input type=date> semantics so the
-// range filter compares like-for-like (string compare is correct for this format).
-function dayKey(ts) {
-  if (!ts) return null;
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return null;
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${d.getFullYear()}-${m}-${day}`;
+// Ascending day comparison; findings with no transaction date always sort last
+// (regardless of direction) rather than masquerading as the oldest/newest.
+function dateCompare(a, b, desc) {
+  const ka = dayKeyOf(a), kb = dayKeyOf(b);
+  if (!ka && !kb) return 0;
+  if (!ka) return 1;
+  if (!kb) return -1;
+  return desc ? kb.localeCompare(ka) : ka.localeCompare(kb);
 }
 
 export default function Page() {
@@ -116,16 +123,30 @@ function Dashboard({ supabase, session }) {
   const [error, setError] = useState(null);
   const [showResolved, setShowResolved] = useState(false);
   const [reviewing, setReviewing] = useState(false);
+  // Soft, non-fatal notice for when the optional AI re-review can't run — kept
+  // separate from `error` so a re-review hiccup never reads as the disposition
+  // (which is already saved) having failed.
+  const [reviewNote, setReviewNote] = useState(null);
   // Sort + filter controls — all client-side over the already-loaded findings.
   const [sortBy, setSortBy] = useState("severity");
   const [sevFilter, setSevFilter] = useState("ALL");
   const [typeFilter, setTypeFilter] = useState("ALL");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+  // Type legend drawer. Default open where it docks beside the content (wide
+  // screens); remember the reviewer's choice across visits.
+  const [legendOpen, setLegendOpen] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const saved = window.localStorage.getItem("legendOpen");
+    if (saved !== null) return saved === "1";
+    return window.innerWidth >= 1200;
+  });
+  const legendRef = useRef(null);
   const email = session.user?.email;
 
   const load = useCallback(async () => {
     setError(null);
+    setReviewNote(null);   // a manual Refresh / reload clears the soft re-review notice too
     // Gate first: the allowlist (currently the admin only) decides access.
     const { data: ok, error: gateErr } = await supabase.rpc("is_reviewer");
     if (gateErr) { setError(gateErr.message); setAuthorized(false); return; }
@@ -138,9 +159,26 @@ function Dashboard({ supabase, session }) {
 
   useEffect(() => { load(); }, [load]);
 
+  // Persist the legend open/closed preference.
+  useEffect(() => {
+    try { window.localStorage.setItem("legendOpen", legendOpen ? "1" : "0"); } catch { /* ignore */ }
+  }, [legendOpen]);
+  // On wide screens the drawer docks beside the content (the page shifts left via
+  // a body class); only do that while the dashboard is actually showing.
+  useEffect(() => {
+    const active = legendOpen && authorized && findings !== null;
+    document.body.classList.toggle("legend-open", active);
+    // When closed the drawer is only slid off-screen (kept mounted for the
+    // animation), so mark it inert: removed from the tab order and the
+    // accessibility tree, instead of leaving a focusable close button off-screen.
+    if (legendRef.current) legendRef.current.inert = !legendOpen;
+    return () => document.body.classList.remove("legend-open");
+  }, [legendOpen, authorized, findings]);
+
   async function disposition(fp, value, note) {
     if (reviewing) return;  // serialize: one re-review at a time, no racing writes
     const trimmed = (note || "").trim();
+    setReviewNote(null);
     setFindings((prev) =>
       prev.map((f) => (f.fingerprint === fp ? { ...f, _busy: true } : f)));
     const { error } = await supabase.rpc("set_finding_disposition", {
@@ -152,22 +190,27 @@ function Dashboard({ supabase, session }) {
       prev.map((f) => (f.fingerprint === fp
         ? { ...f, disposition: value, disposition_note: trimmed || null,
             dispositioned_by: email, _busy: false } : f)));
-    // Feed the reason back to the AI: re-review every remaining open finding in
-    // light of the accumulated feedback, then reload to show any updates. The
-    // disposition itself is already saved, so a re-review failure is non-fatal —
-    // but surface it (after the reload, which resets the banner) so a misconfig
-    // or timeout isn't silent.
-    let reviewErr = null;
+    // The disposition + reason are now saved. Feeding the reason to the AI re-review
+    // is BEST-EFFORT: if it can't run, that must NOT read as the disposition failing,
+    // so show a soft notice (with the function's actual reason when available) rather
+    // than the red error banner.
+    let reviewMsg = null;
     if (trimmed) {
       setReviewing(true);
       try {
         const { error: e } = await supabase.functions.invoke("feedback-review", { body: {} });
-        reviewErr = e || null;
-      } catch (e) { reviewErr = e; }
+        if (e) {
+          reviewMsg = e.message || String(e);
+          try {                                  // surface the function's JSON reason
+            const body = await e.context?.json?.();
+            if (body?.error) reviewMsg = body.error;
+          } catch { /* body wasn't JSON */ }
+        }
+      } catch (e) { reviewMsg = e?.message || String(e); }
       setReviewing(false);
     }
     await load();
-    if (reviewErr) setError(reviewErr.message || String(reviewErr));
+    if (reviewMsg) setReviewNote(reviewMsg);
   }
 
   // "Cleared" = closed (legit / error_corrected). Escalated is NOT cleared — it
@@ -184,6 +227,11 @@ function Dashboard({ supabase, session }) {
   const typeOptions = [
     ...new Set((findings || []).map((f) => f.rule_id).filter(Boolean)),
   ].sort();
+  // How many current findings each type produced — shown in the legend.
+  const countByType = (findings || []).reduce((m, f) => {
+    if (f.rule_id) m[f.rule_id] = (m[f.rule_id] || 0) + 1;
+    return m;
+  }, {});
 
   const filtersActive =
     sevFilter !== "ALL" || typeFilter !== "ALL" || !!fromDate || !!toDate;
@@ -199,28 +247,28 @@ function Dashboard({ supabase, session }) {
     if (sevFilter !== "ALL" && f.severity !== sevFilter) return false;
     if (typeFilter !== "ALL" && f.rule_id !== typeFilter) return false;
     if (fromDate || toDate) {
-      const k = dayKey(f.created_at);
-      if (!k) return false;                 // no date → can't fall inside a window
+      const k = dayKeyOf(f);
+      if (!k) return false;                 // no transaction date → outside any window
       if (fromDate && k < fromDate) return false;
       if (toDate && k > toDate) return false;
     }
     return true;
   });
-  // The default "severity" sort reproduces the previous grouped-by-severity order
-  // exactly (severity rank, then newest first), so a single flat list covers every
-  // sort mode — no grouped/flat branch, which also keeps the card list mounted
-  // (and in-progress note text intact) across sort changes.
+  // The default "severity" sort preserves the severity grouping (CRITICAL→INFO),
+  // tie-breaking by transaction date (newest first), so a single flat list covers
+  // every sort mode — no grouped/flat branch, which also keeps the card list
+  // mounted (and in-progress note text intact) across sort changes.
   const sorted = [...filtered].sort((a, b) => {
     switch (sortBy) {
-      case "date_desc": return tsOf(b) - tsOf(a);
-      case "date_asc": return tsOf(a) - tsOf(b);
+      case "date_desc": return dateCompare(a, b, true);
+      case "date_asc": return dateCompare(a, b, false);
       case "type":
         return (a.rule_id || "").localeCompare(b.rule_id || "")
           || sevRank(a.severity) - sevRank(b.severity)
-          || tsOf(b) - tsOf(a);
+          || dateCompare(a, b, true);
       case "severity":
       default:
-        return sevRank(a.severity) - sevRank(b.severity) || tsOf(b) - tsOf(a);
+        return sevRank(a.severity) - sevRank(b.severity) || dateCompare(a, b, true);
     }
   });
 
@@ -236,6 +284,11 @@ function Dashboard({ supabase, session }) {
 
       {error && <div className="note err">{error}</div>}
       {reviewing && <div className="note ok">Re-reviewing the open findings with your feedback…</div>}
+      {reviewNote && (
+        <div className="note warn">
+          Disposition saved. The AI re-review didn’t run: {reviewNote}.
+        </div>
+      )}
       {authorized === undefined && <div className="muted">Checking access…</div>}
 
       {authorized === false && (
@@ -263,6 +316,10 @@ function Dashboard({ supabase, session }) {
                 onChange={(e) => setShowResolved(e.target.checked)} /> show cleared
             </label>
             <button className="link" onClick={load}>Refresh</button>
+            <button className="link" aria-expanded={legendOpen} aria-controls="type-legend"
+              onClick={() => setLegendOpen((v) => !v)}>
+              {legendOpen ? "Hide legend" : "Type legend"}
+            </button>
           </div>
 
           <div className="controls">
@@ -289,12 +346,12 @@ function Dashboard({ supabase, session }) {
               </select>
             </label>
             <label className="ctl">
-              <span>From</span>
+              <span title="Filters on the transaction date">Txn from</span>
               <input type="date" value={fromDate} max={toDate || undefined}
                 onChange={(e) => setFromDate(e.target.value)} />
             </label>
             <label className="ctl">
-              <span>To</span>
+              <span title="Filters on the transaction date">Txn to</span>
               <input type="date" value={toDate} min={fromDate || undefined}
                 onChange={(e) => setToDate(e.target.value)} />
             </label>
@@ -325,6 +382,50 @@ function Dashboard({ supabase, session }) {
                 locked={reviewing} />
             ))}
           </section>
+
+          {legendOpen && (
+            <div className="legend-backdrop" onClick={() => setLegendOpen(false)} />
+          )}
+          <aside ref={legendRef} id="type-legend" className={`legend ${legendOpen ? "open" : ""}`}
+            role="complementary" aria-label="Finding type legend">
+            <div className="legend-head">
+              <h2>Type legend</h2>
+              <button className="link" aria-label="Close legend"
+                onClick={() => setLegendOpen(false)}>✕</button>
+            </div>
+            <div className="legend-body">
+              <p className="legend-intro muted">
+                What each finding <b>type</b> (rule ID) checks for. A badge shows how
+                many current findings came from that rule.
+              </p>
+              {RULE_GROUPS.map((g) => (
+                <div className="legend-group" key={g.tier}>
+                  <h3>{g.tier}</h3>
+                  {g.rules.map((r) => (
+                    <div className="legend-item" key={r.id}>
+                      <span className="legend-id">{r.id}</span>
+                      <span className="legend-text">
+                        <span className="legend-label">
+                          {r.label}
+                          {countByType[r.id] ? (
+                            <span className="legend-count"
+                              title={`${countByType[r.id]} current finding(s)`}>
+                              {countByType[r.id]}
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="legend-desc">{r.desc}</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+              <p className="legend-foot muted">
+                Tier 3 is the AI judgment layer applied to the flags above — not a
+                finding type itself.
+              </p>
+            </div>
+          </aside>
         </>
       )}
     </div>
@@ -343,18 +444,18 @@ function FindingCard({ f, onDisposition, locked }) {
   // Only legit / error_corrected are "cleared" (dim + hidden by default). Escalated
   // stays active: full opacity, still actionable, just badged as escalated.
   const cleared = f.disposition === "legit" || f.disposition === "error_corrected";
-  const when = fmtDate(f.created_at);
+  const when = fmtDay(dayKeyOf(f));
   return (
     <div className={`card ${cleared ? "resolved" : ""}`}>
       <div className="row">
         <span className={`badge sev-${f.severity}`}>{f.severity}</span>
-        <span className="rule">{f.rule_id}</span>
+        <span className="rule" title={RULE_INFO[f.rule_id]?.label || undefined}>{f.rule_id}</span>
         <span className="muted" style={{ fontSize: 12 }}>{(f.entity_ids || []).join(", ")}</span>
         {!cleared && f.ai_updated_at && (
           <span className="tag-updated">updated from your feedback</span>
         )}
         <div className="spacer" />
-        {when && <span className="when">{when}</span>}
+        {when && <span className="when" title="Transaction date">{when}</span>}
         <span className={`disp ${f.disposition}`}>{f.disposition}</span>
       </div>
 
