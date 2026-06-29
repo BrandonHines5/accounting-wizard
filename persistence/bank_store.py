@@ -20,6 +20,7 @@ import pandas as pd
 from bank.model import line_fingerprint
 
 DEFAULT_SCHEMA = "financial_forensics"
+_CHUNK = 500          # upsert in batches — a multi-month backfill is thousands of lines
 
 # The only columns ever written — a whitelist is the scrub. No raw account number,
 # no image bytes can appear because there is no column for them.
@@ -40,6 +41,27 @@ def _jsonable(value):
     return value
 
 
+def _disambiguate_fingerprints(rows: list[dict]) -> None:
+    """Make line_fingerprints unique within one upsert batch.
+
+    Two statement lines identical in (entity, account, date, amount, check_no,
+    description) hash to the same line_fingerprint — common across a multi-month
+    backfill (e.g. an identical recurring draft, or two same-day same-amount
+    deposits with the same memo). Postgres rejects duplicate conflict keys in one
+    command ("ON CONFLICT DO UPDATE command cannot affect row a second time"), so
+    suffix the 2nd+ occurrence (#2, #3, …) to keep every line as its own row.
+    line_fingerprint is sha256 hex (no '#'), so a suffix can never collide with a
+    real fingerprint, and the bank frame's stable statement order makes the
+    assignment idempotent across re-runs."""
+    seen: dict[str, int] = {}
+    for row in rows:
+        fp = row["line_fingerprint"]
+        n = seen.get(fp, 0)
+        if n:
+            row["line_fingerprint"] = f"{fp}#{n + 1}"
+        seen[fp] = n + 1
+
+
 class BankTransactionsStore:
     def __init__(self, client, schema: str = DEFAULT_SCHEMA):
         self._table = client.schema(schema).table("bank_transactions")
@@ -58,8 +80,10 @@ class BankTransactionsStore:
         """Upsert the bank lines on line_fingerprint (re-extracted lines update in
         place). Returns the number of rows written."""
         rows = [self._row(row) for _, row in bank.iterrows()]
-        if rows:
-            self._table.upsert(rows, on_conflict="line_fingerprint").execute()
+        _disambiguate_fingerprints(rows)
+        for start in range(0, len(rows), _CHUNK):
+            self._table.upsert(rows[start:start + _CHUNK],
+                               on_conflict="line_fingerprint").execute()
         return len(rows)
 
     @staticmethod

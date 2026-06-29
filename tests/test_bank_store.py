@@ -9,16 +9,19 @@ from persistence.bank_store import _PERSIST_COLUMNS, BankTransactionsStore
 
 class _FakeTable:
     def __init__(self):
-        self.upsert_rows = None
+        self.upsert_rows = None          # accumulated across chunked upsert calls
         self.on_conflict = None
+        self.upsert_calls = 0
 
     def upsert(self, rows, on_conflict=None):
-        self.upsert_rows = rows
+        self.upsert_rows = (self.upsert_rows or []) + list(rows)
         self.on_conflict = on_conflict
+        self.upsert_calls += 1
+        self._last = rows
         return self
 
     def execute(self):
-        return types.SimpleNamespace(data=self.upsert_rows)
+        return types.SimpleNamespace(data=self._last)
 
 
 class _FakeClient:
@@ -80,3 +83,20 @@ def test_line_fingerprint_stable_and_sensitive(registry):
     bank = _bank(registry)
     assert line_fingerprint(bank.iloc[0]) == line_fingerprint(bank.iloc[0].copy())
     assert line_fingerprint(bank.iloc[0]) != line_fingerprint(bank.iloc[1])
+
+
+def test_duplicate_content_lines_are_disambiguated(registry):
+    # Two statement lines identical in (entity, account, date, amount, check_no,
+    # description) hash to the same fingerprint. The batch upsert must not crash on
+    # duplicate conflict keys — both rows persist, with the 2nd suffixed.
+    dup = {"entity_id": "alpha", "account_fingerprint": "h1", "date": "2026-05-09",
+           "description": "BILL PAY DEBIT", "amount": -1570.35, "check_no": ""}
+    bank = validate_bank_transactions(pd.DataFrame([dup, dict(dup)]),
+                                      {e.id for e in registry})
+    table = _FakeTable()
+    n = BankTransactionsStore(_FakeClient(table)).save(bank)
+    assert n == 2
+    fps = [r["line_fingerprint"] for r in table.upsert_rows]
+    assert len(set(fps)) == 2                         # unique within the batch
+    base = line_fingerprint(bank.iloc[0])
+    assert fps[0] == base and fps[1] == f"{base}#2"   # 2nd occurrence suffixed
