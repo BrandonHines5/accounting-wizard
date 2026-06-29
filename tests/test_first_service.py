@@ -13,7 +13,8 @@ import pytest
 from bank.statement_extract import (extract_pdf, normalize_register,
                                     parse_first_service_words, PDF_LAYOUTS,
                                     _fsb_year_for, first_service_check_anchors,
-                                    first_service_self_check)
+                                    first_service_self_check, _fsb_split_check_amount,
+                                    _fsb_diag_summary)
 
 # Column x0 positions copied from the real layout (see statement_extract geometry).
 _CRED_DESC_X0, _DEBIT_DESC_X0 = 172, 188
@@ -178,6 +179,83 @@ def test_split_check_number_is_reassembled():
     checks = parse_first_service_words([p.words]).set_index("check_no")["amount"]
     assert checks["7568"] == -400000.00      # reassembled, amount intact
     assert "7" not in checks.index           # no bogus single-digit check
+
+
+def test_checks_grid_parses_at_a_shifted_offset():
+    """The 3-up checks grid still parses when its columns are shifted to a different
+    absolute offset — the adaptivity that the April-tuned x-bands lacked."""
+    # The same 3-up grid shifted right 120pt (a different statement's margin/column
+    # geometry). Cells are anchored on their date token and the number/amount split at
+    # the widest gap, so there is no hardcoded column x to drift out from under — the
+    # April-tuned bands would have dropped every one of these (the high-volume-month
+    # bug). A split check number at the new offset still reassembles.
+    SH = 120
+    p = Page()
+    p.row(("Statement", 50), ("Date:", 120), ("12-31-25", 200))
+    p.row(("Checks", 50))
+    p.row(("Date", 50 + SH), ("Check", 90 + SH), ("No", 115 + SH), ("Amount", 150 + SH),
+          ("Date", 234 + SH), ("Check", 274 + SH), ("No", 299 + SH), ("Amount", 334 + SH),
+          ("Date", 417 + SH), ("Check", 457 + SH), ("No", 482 + SH), ("Amount", 517 + SH))
+    p.row(("12/14", 50 + SH), ("9001", 99 + SH), ("720.00", 162 + SH),
+          ("12/15", 234 + SH), ("9002", 283 + SH), ("574.76", 345 + SH),
+          ("12/30", 417 + SH), ("9", 467 + SH), ("003", 480 + SH), ("400,000.00", 517 + SH))
+    checks = parse_first_service_words([p.words]).set_index("check_no")["amount"]
+    assert set(checks.index) == {"9001", "9002", "9003"}
+    assert checks["9001"] == -720.00
+    assert checks["9003"] == -400000.00      # split number reassembled at the new offset
+
+
+def test_checks_grid_parses_a_two_column_layout():
+    """A 2-up checks grid parses correctly — the column count is inferred from the
+    date anchors, with no assumption of three groups."""
+    # A statement whose checks grid is only 2 columns wide. The column count comes
+    # from the date anchors, so nothing about "three groups" is assumed; an odd final
+    # check sitting alone in the left column is captured too.
+    p = Page()
+    p.row(("Statement", 50), ("Date:", 120), ("01-31-26", 200))
+    p.row(("Checks", 50))
+    p.row(("Date", 50), ("Check", 90), ("No", 115), ("Amount", 150),
+          ("Date", 300), ("Check", 340), ("No", 365), ("Amount", 400))
+    p.row(("1/05", 50), ("5001", 99), ("100.00", 162),
+          ("1/06", 300), ("5002", 349), ("2,500.00", 400))
+    p.row(("1/20", 50), ("5003", 99), ("75.50", 165))     # lone final check
+    checks = parse_first_service_words([p.words]).set_index("check_no")["amount"]
+    assert set(checks.index) == {"5001", "5002", "5003"}
+    assert checks["5002"] == -2500.00
+    assert checks["5003"] == -75.50
+
+
+def test_split_check_amount_uses_widest_gap():
+    """The check-number/amount split lands at the widest x-gap and validates both
+    sides — covering both fragments split, a comma rendered as its own token, and a
+    cell with no valid split."""
+    def w(text, x0):
+        """A minimal word box at the given x0 (x1/top are unused by the split)."""
+        return {"text": text, "x0": x0, "x1": x0 + 10, "top": 0.0}
+    # both number and amount fragmented: '7' '568' | '791.' '15' → ('7568', '791.15')
+    assert _fsb_split_check_amount(
+        [w("7", 467), w("568", 480), w("791.", 520), w("15", 535)]) == ("7568", "791.15")
+    # a comma rendered as its own token must not fail the all-digit number test
+    assert _fsb_split_check_amount(
+        [w("8052", 99), w("1,", 150), w("234.56", 165)]) == ("8052", "1,234.56")
+    # a cell missing its amount (or its number) has no valid split
+    assert _fsb_split_check_amount([w("8052", 99)]) is None
+
+
+def test_parse_diag_is_populated_and_leaks_no_data():
+    """The optional diag dict is filled with structural counters, and its summary
+    reports counts only — never an amount or a check number."""
+    diag = {}
+    parse_first_service_words(_statement_pages(), diag=diag)
+    assert diag["pages"] == 2
+    assert diag["stopped_at_page"] == 1            # Daily Balance Summary is on page 2
+    assert diag["cells_emitted"] == 7              # the 7 checks in the fixture
+    assert diag["cells_unsplit"] == 0
+    summary = _fsb_diag_summary(diag)
+    assert "check cells 7/7 emitted" in summary
+    # structural counts only — never an amount or a check number
+    for leak in ("7166", "720.00", "8081", "32,743.62"):
+        assert leak not in summary
 
 
 def test_self_check_flags_total_mismatch():

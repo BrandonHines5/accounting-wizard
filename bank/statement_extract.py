@@ -71,7 +71,7 @@ def _to_amount(series: pd.Series) -> pd.Series:
 def _signed_amount(rows: pd.DataFrame, columns: dict) -> pd.Series:
     """Resolve the signed amount (negative = disbursement) from either a single
     signed `amount` column or a `debit`/`credit` pair (positive magnitudes;
-    signed = credit − debit)."""
+    signed = credit - debit)."""
     amount_col, debit_col, credit_col = (columns.get("amount"),
                                          columns.get("debit"), columns.get("credit"))
     present = [c for c in (amount_col, debit_col, credit_col) if c and c in rows.columns]
@@ -225,12 +225,16 @@ def extract_pdf(
 _FSB_DATE_MAX_X0 = 90      # the M/D date sits at x0 ~50
 _FSB_AMT_MAX_X0 = 170      # amount fragments fall in [90,170); description begins
                            #   at ~172 (credits) / ~188 (debits)
-_FSB_GRID_SPLITS = (230, 410)   # checks grid: three column groups, split by x0
-# Within each checks-grid column, the amount sub-column begins at this x0. Tokens
-# left of it are the check number, right of it the amount — so a check number split
-# across word fragments ('7' '568' → 7568) and a split amount ('7' '91.' '15' →
-# 791.15) are each reassembled from their own band instead of by token order.
-_FSB_CHECK_AMT_X0 = (140, 322, 505)
+# The checks grid is parsed WITHOUT hardcoded column geometry (it varies by
+# statement — column count and absolute x-offset both shift, and tuning bands to one
+# month silently dropped checks on the higher-volume months). Each cell is anchored
+# on its M/D date token (one date starts each cell, so date tokens delimit the
+# columns for any 1/2/3-up layout), and within a cell the check number and amount are
+# separated at the widest x-gap between word fragments — the visible gutter between
+# the "Check No." and "Amount" sub-columns. That gutter is wider than the stray
+# intra-number gaps the PDF inserts, so a split check number ('7' '568' → 7568) and a
+# split amount ('7' '91.' '15' → 791.15) each reassemble on the correct side without
+# depending on any absolute coordinate.
 _FSB_LINE_GAP = 4          # rows are ~10pt apart; a superscripted break-marker '*'
                            #   sits ~0.25pt off its row. Cluster words by vertical
                            #   gap (4 > intra-row jitter, < inter-row spacing) so a
@@ -278,18 +282,27 @@ def _fsb_year_for(month: int, stmt_month: int, stmt_year: int) -> int:
     return stmt_year - 1 if month > stmt_month else stmt_year
 
 
-def parse_first_service_words(pages: list[list[dict]]) -> pd.DataFrame:
+def parse_first_service_words(pages: list[list[dict]], *, diag: dict | None = None) -> pd.DataFrame:
     """Parse First Service Bank statement word boxes into register rows.
 
     `pages` is one list of word dicts (keys: text, x0, x1, top) per page, in order —
     exactly what pdfplumber's `extract_words` returns. Pure and deterministic, so it
     is unit-tested against synthetic layouts. Returns a DataFrame with canonical
-    `date` (ISO), `description`, `amount` (signed: credits +, debits/checks −) and
-    `check_no`; `normalize_register` does the hashing, validation and noise drop."""
+    `date` (ISO), `description`, `amount` (signed: credits +, debits/checks -) and
+    `check_no`; `normalize_register` does the hashing, validation and noise drop.
+
+    Pass `diag` (a dict) to collect aggregate parse counters — per-section row counts,
+    checks-grid cells attempted/emitted with skip reasons, the checks x0 span, and the
+    page where the body ended. Counts only (no amounts or check numbers), so it is
+    safe to print to a run/CI log when the self-check doesn't reconcile."""
     stmt_month = stmt_year = None
     records: list[dict] = []
     section = None
-    for words in pages:
+    if diag is not None:
+        diag.update({"pages": len(pages), "stopped_at_page": None,
+                     "rows_credit": 0, "rows_debit": 0, "rows_checks": 0,
+                     "cells_total": 0, "cells_emitted": 0, "cells_unsplit": 0})
+    for pageno, words in enumerate(pages):
         for row in _fsb_cluster_rows(words):
             text = " ".join(w["text"] for w in row)
             if stmt_month is None:
@@ -316,13 +329,22 @@ def parse_first_service_words(pages: list[list[dict]]) -> pd.DataFrame:
             if text.strip() == "Checks":
                 section = "checks"; continue
             if "Daily Balance Summary" in text:
+                if diag is not None:
+                    diag["stopped_at_page"] = pageno
                 return _fsb_frame(records)         # statement body ends here
             if section in ("credit", "debit"):
+                if diag is not None:
+                    diag[f"rows_{section}"] += 1
                 rec = _fsb_parse_txn_row(row, section, stmt_month, stmt_year)
                 if rec:
                     records.append(rec)
             elif section == "checks":
-                records.extend(_fsb_parse_check_row(row, stmt_month, stmt_year))
+                if diag is not None:
+                    diag["rows_checks"] += 1
+                    for w in row:
+                        diag["checks_x0_min"] = min(diag.get("checks_x0_min", w["x0"]), w["x0"])
+                        diag["checks_x0_max"] = max(diag.get("checks_x0_max", w["x0"]), w["x0"])
+                records.extend(_fsb_parse_check_row(row, stmt_month, stmt_year, diag))
     return _fsb_frame(records)
 
 
@@ -351,34 +373,54 @@ def _fsb_parse_txn_row(row, section, stmt_month, stmt_year) -> dict | None:
     }
 
 
-def _fsb_parse_check_row(row, stmt_month, stmt_year) -> list[dict]:
-    """A checks-grid line carries up to three (date, check no, amount) triples, one
-    per column group. Within a group the check number and amount are split by their
-    own x-sub-column (not token order), because either can arrive as spaced word
-    fragments ('7' '568' → check 7568; '7' '91.' '15' → $791.15). Checks are
-    disbursements → negative amounts."""
-    groups: list[list[dict]] = [[], [], []]
-    for w in row:
-        g = 0 if w["x0"] < _FSB_GRID_SPLITS[0] else (1 if w["x0"] < _FSB_GRID_SPLITS[1] else 2)
-        groups[g].append(w)
+def _fsb_split_check_amount(rest: list[dict]) -> tuple[str, str] | None:
+    """Split a checks-grid cell's post-date fragments into (check_no, amount).
+
+    The check number (left sub-column) and amount (right sub-column) are separated by
+    the cell's widest x-gap — the gutter between the sub-columns is wider than the
+    stray gaps the PDF inserts inside a single number. Candidate split points are
+    tried widest-gap first; the first that yields an all-digit number and a parseable
+    amount wins, so a fragmented number ('7' '568') and a fragmented amount
+    ('7' '91.' '15') each land on the correct side without any absolute coordinate.
+    None if no split validates (a cell missing its number or amount)."""
+    if len(rest) < 2:
+        return None
+    by_gap = sorted(range(len(rest) - 1),
+                    key=lambda k: rest[k + 1]["x0"] - rest[k]["x0"], reverse=True)
+    for k in by_gap:
+        number = "".join(w["text"] for w in rest[:k + 1]).replace(" ", "").rstrip("*")
+        amt = _fsb_amount(rest[k + 1:])
+        if number.isdigit() and amt:
+            return number, amt
+    return None
+
+
+def _fsb_parse_check_row(row, stmt_month, stmt_year, diag: dict | None = None) -> list[dict]:
+    """A checks-grid line carries up to three (date, check no, amount) cells. Cells
+    are delimited by their leading M/D date token (one date per cell), so a 1/2/3-up
+    layout parses with no hardcoded column x-bands; within a cell the check number and
+    amount split at the widest x-gap (see _fsb_split_check_amount), absorbing spaced
+    word fragments. Checks are disbursements → negative amounts."""
+    date_idxs = [i for i, w in enumerate(row) if _FSB_DATE_RE.match(w["text"])]
     out: list[dict] = []
-    for gi, grp in enumerate(groups):
-        if len(grp) < 3:
+    for j, di in enumerate(date_idxs):
+        if diag is not None:
+            diag["cells_total"] = diag.get("cells_total", 0) + 1
+        end = date_idxs[j + 1] if j + 1 < len(date_idxs) else len(row)
+        split = _fsb_split_check_amount(row[di + 1:end])
+        if split is None:
+            if diag is not None:
+                diag["cells_unsplit"] = diag.get("cells_unsplit", 0) + 1
             continue
-        date = grp[0]
-        if not _FSB_DATE_RE.match(date["text"]):
-            continue
-        amt_x0 = _FSB_CHECK_AMT_X0[gi]
-        number = "".join(w["text"] for w in grp[1:] if w["x0"] < amt_x0).replace(" ", "").rstrip("*")
-        amt = _fsb_amount([w for w in grp[1:] if w["x0"] >= amt_x0])
-        if not number.isdigit() or not amt:
-            continue
+        number, amt = split
         out.append({
-            "date": _fsb_iso(date["text"], stmt_month, stmt_year),
+            "date": _fsb_iso(row[di]["text"], stmt_month, stmt_year),
             "description": f"Check {number}",
             "amount": -float(amt.replace(",", "")),
             "check_no": number,
         })
+        if diag is not None:
+            diag["cells_emitted"] = diag.get("cells_emitted", 0) + 1
     return out
 
 
@@ -427,11 +469,29 @@ def first_service_self_check(frame: pd.DataFrame, expected: dict, tol: float = 0
     return msgs
 
 
+def _fsb_diag_summary(diag: dict) -> str:
+    """A compact, data-free structural summary of a parse, printed when the self-check
+    doesn't reconcile so the run/CI log shows *where* rows went missing (early body
+    stop, a section that never populated, check cells that wouldn't split). Counts and
+    x0 spans only — never amounts or check numbers."""
+    pages = diag.get("pages", 0)
+    stop = diag.get("stopped_at_page")
+    stop_note = (f"body ended page {stop}/{pages - 1}" if stop is not None
+                 else "no Daily-Balance stop seen")
+    x0 = (f", checks x0 {diag['checks_x0_min']:.0f}-{diag['checks_x0_max']:.0f}"
+          if "checks_x0_min" in diag else "")
+    return (f"[parse: {pages} pages, {stop_note}; rows credit/debit/checks "
+            f"{diag.get('rows_credit', 0)}/{diag.get('rows_debit', 0)}/"
+            f"{diag.get('rows_checks', 0)}; check cells {diag.get('cells_emitted', 0)}/"
+            f"{diag.get('cells_total', 0)} emitted, {diag.get('cells_unsplit', 0)} unsplit{x0}]")
+
+
 def _read_first_service_pdf(path: str | Path) -> pd.DataFrame:
     """Open a First Service Bank PDF and feed its word boxes to the pure parser.
     Prints a warning to the run log (matching the ingest pipeline's diagnostics) if
     the parsed sums or row counts don't reconcile to the statement's printed control
-    totals — a loud signal that a statement parsed incompletely."""
+    totals — a loud signal that a statement parsed incompletely — followed by a
+    structural breakdown to localize the gap."""
     try:
         import pdfplumber  # lazy: optional dependency
     except ImportError as exc:  # pragma: no cover - exercised only without the dep
@@ -441,11 +501,13 @@ def _read_first_service_pdf(path: str | Path) -> pd.DataFrame:
     with pdfplumber.open(path) as pdf:
         pages = [page.extract_words(x_tolerance=1, keep_blank_chars=False)
                  for page in pdf.pages]
-    frame = parse_first_service_words(pages)
+    diag: dict = {}
+    frame = parse_first_service_words(pages, diag=diag)
     mismatches = first_service_self_check(frame, first_service_summary_totals(pages))
     if mismatches:
         print(f"  ! Statement self-check for {Path(path).name} did not reconcile to the "
               "printed control totals: " + "; ".join(mismatches))
+        print("    " + _fsb_diag_summary(diag))
     return frame
 
 
