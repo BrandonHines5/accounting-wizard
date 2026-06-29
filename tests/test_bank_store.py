@@ -4,21 +4,24 @@ import types
 import pandas as pd
 
 from bank.model import line_fingerprint, validate_bank_transactions
-from persistence.bank_store import _PERSIST_COLUMNS, BankTransactionsStore
+from persistence.bank_store import _CHUNK, _PERSIST_COLUMNS, BankTransactionsStore
 
 
 class _FakeTable:
     def __init__(self):
-        self.upsert_rows = None
+        self.upsert_rows = None          # accumulated across chunked upsert calls
         self.on_conflict = None
+        self.upsert_calls = 0
 
     def upsert(self, rows, on_conflict=None):
-        self.upsert_rows = rows
+        self.upsert_rows = (self.upsert_rows or []) + list(rows)
         self.on_conflict = on_conflict
+        self.upsert_calls += 1
+        self._last = rows
         return self
 
     def execute(self):
-        return types.SimpleNamespace(data=self.upsert_rows)
+        return types.SimpleNamespace(data=self._last)
 
 
 class _FakeClient:
@@ -80,3 +83,36 @@ def test_line_fingerprint_stable_and_sensitive(registry):
     bank = _bank(registry)
     assert line_fingerprint(bank.iloc[0]) == line_fingerprint(bank.iloc[0].copy())
     assert line_fingerprint(bank.iloc[0]) != line_fingerprint(bank.iloc[1])
+
+
+def test_duplicate_content_lines_are_disambiguated(registry):
+    # Two statement lines identical in (entity, account, date, amount, check_no,
+    # description) hash to the same fingerprint. The batch upsert must not crash on
+    # duplicate conflict keys — both rows persist, with the 2nd suffixed.
+    dup = {"entity_id": "alpha", "account_fingerprint": "h1", "date": "2026-05-09",
+           "description": "BILL PAY DEBIT", "amount": -1570.35, "check_no": ""}
+    bank = validate_bank_transactions(pd.DataFrame([dup, dict(dup)]),
+                                      {e.id for e in registry})
+    table = _FakeTable()
+    n = BankTransactionsStore(_FakeClient(table)).save(bank)
+    assert n == 2
+    fps = [r["line_fingerprint"] for r in table.upsert_rows]
+    assert len(set(fps)) == 2                         # unique within the batch
+    base = line_fingerprint(bank.iloc[0])
+    assert fps[0] == base and fps[1] == f"{base}#2"   # 2nd occurrence suffixed
+
+
+def test_chunked_save_spans_batches(registry):
+    # A multi-month backfill is thousands of lines; save() must upsert in _CHUNK
+    # batches while keeping every fingerprint unique across the chunk boundary.
+    n_rows = _CHUNK + 1
+    rows = [{"entity_id": "alpha", "account_fingerprint": "h1", "date": "2026-05-01",
+             "description": f"ACH {i}", "amount": -float(i + 1), "check_no": ""}
+            for i in range(n_rows)]
+    bank = validate_bank_transactions(pd.DataFrame(rows), {e.id for e in registry})
+    table = _FakeTable()
+    n = BankTransactionsStore(_FakeClient(table)).save(bank)
+    assert n == n_rows
+    assert table.upsert_calls == 2                       # 500 + 1 → two batches
+    fps = [r["line_fingerprint"] for r in table.upsert_rows]
+    assert len(fps) == n_rows and len(set(fps)) == n_rows  # all rows, all unique

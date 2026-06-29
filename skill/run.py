@@ -226,13 +226,19 @@ def _statement_pdf_check_source(account, bank_dir):
 def _check_image_source_factory(args, bank_dir):
     """Return a callable `account -> CheckImageSource | None`. An account configured
     with `check_images.source: statement_pdf` reads its cancelled-check images out of
-    its own statement; otherwise images come from the local sync / SharePoint."""
-    file_source = _file_check_image_source_factory(args)
+    its own statement; otherwise images come from the local sync / SharePoint.
+
+    The local/graph fallback is built lazily, so an all-statement_pdf run never emits
+    a spurious 'no image dir' skip message for a backend it doesn't use."""
+    fallback = {"factory": None, "built": False}
 
     def make_source(account):
         if (account.check_images or {}).get("source") == "statement_pdf":
             return _statement_pdf_check_source(account, bank_dir)
-        return file_source(account) if file_source is not None else None
+        if not fallback["built"]:
+            fallback["factory"] = _file_check_image_source_factory(args)
+            fallback["built"] = True
+        return fallback["factory"](account) if fallback["factory"] is not None else None
 
     return make_source
 
