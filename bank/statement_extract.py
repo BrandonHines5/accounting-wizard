@@ -422,8 +422,8 @@ def first_service_self_check(frame: pd.DataFrame, expected: dict, tol: float = 0
         if exp_total is None:
             continue
         if abs(total - exp_total) > tol or (exp_count is not None and len(rows) != exp_count):
-            msgs.append(f"{side}s parsed {total:,.2f} ({len(rows)}) vs printed "
-                        f"{exp_total:,.2f} ({exp_count})")
+            msgs.append(f"do the parsed {side}s ({total:,.2f}, {len(rows)} rows) match the "
+                        f"statement's printed {exp_total:,.2f} ({exp_count})?")
     return msgs
 
 
@@ -444,8 +444,8 @@ def _read_first_service_pdf(path: str | Path) -> pd.DataFrame:
     frame = parse_first_service_words(pages)
     mismatches = first_service_self_check(frame, first_service_summary_totals(pages))
     if mismatches:
-        print(f"  ! Statement parse self-check failed for {Path(path).name} — "
-              "did not reconcile to printed totals: " + "; ".join(mismatches))
+        print(f"  ! Statement self-check for {Path(path).name} did not reconcile to the "
+              "printed control totals: " + "; ".join(mismatches))
     return frame
 
 
