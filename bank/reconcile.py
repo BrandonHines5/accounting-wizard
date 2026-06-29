@@ -85,6 +85,13 @@ def reconcile(
         books["_amt"] = books["amount"].abs()
         books["_check"] = books["check_no"].map(_norm_check)
 
+        # The window the bank statements actually cover for this entity. We can only
+        # assert "recorded but never cleared" for book entries dated inside it —
+        # outside it there is no bank data to verify against (e.g. a check written
+        # months before the earliest statement we hold).
+        ent_dates = bank.loc[bank["entity_id"] == entity_id, "date"]
+        win_lo, win_hi = ent_dates.min(), ent_dates.max()
+
         disb = bank[(bank["entity_id"] == entity_id) & (bank["amount"] < 0)].copy()
         disb["_amt"] = disb["amount"].abs()
         disb["_check"] = disb["check_no"].map(_norm_check)
@@ -103,6 +110,7 @@ def reconcile(
                               "recorded in the books. Is this an unrecorded disbursement?"),
                     details={"account": line["account_fingerprint"],
                              "check_no": line["_check"], "amount": float(line["_amt"]),
+                             "cleared_date": str(line["date"].date()),
                              "bank_ref": _bank_ref(line)}))
                 continue
             book = cands.iloc[0]
@@ -142,13 +150,18 @@ def reconcile(
                               "authorized ACH/wire/debit?"),
                     details={"account": line["account_fingerprint"],
                              "amount": float(line["_amt"]), "description": line["description"],
+                             "cleared_date": str(line["date"].date()),
                              "bank_ref": _bank_ref(line)}))
             else:
                 matched.add(str(cands.iloc[0]["source_id"]))
 
-        # 3. Recorded checks that never cleared → outstanding or never sent.
+        # 3. Recorded checks that never cleared → outstanding or never sent. Scoped
+        # to the bank coverage window: a check dated outside it can't be confirmed
+        # cleared from the statements we hold, so flagging it would be a false
+        # positive, not a finding.
         unmatched = books[(books["_check"] != "")
-                          & (~books["source_id"].astype(str).isin(matched))]
+                          & (~books["source_id"].astype(str).isin(matched))
+                          & books["date"].between(win_lo, win_hi)]
         for _, book in unmatched.iterrows():
             findings.append(Finding(
                 "T4-02", Severity.HIGH, [entity_id],
@@ -259,6 +272,8 @@ def reconcile_deposits(
             & (transactions["txn_type"].isin(BOOK_RECEIPT_TYPES))
         ]
         deposits = bank[(bank["entity_id"] == entity_id) & (bank["amount"] > 0)]
+        ent_dates = bank.loc[bank["entity_id"] == entity_id, "date"]
+        win_lo, win_hi = ent_dates.min(), ent_dates.max()
 
         rec_rows = [(idx, row) for idx, row in recorded.iterrows()]
         dep_rows = [(idx, row) for idx, row in deposits.iterrows()]
@@ -297,9 +312,14 @@ def reconcile_deposits(
                 matched_dep.add(didx)
                 matched_rec.update(subset)
 
-        # Leftovers are the exceptions.
+        # Leftovers are the exceptions. The missing-deposit side (a recorded receipt
+        # with no bank match) is scoped to the bank coverage window widened by the
+        # match tolerance — a receipt that couldn't have matched any bank line in the
+        # statements held (outside that range) can't be confirmed missing.
+        lo = win_lo - pd.Timedelta(days=date_tol)
+        hi = win_hi + pd.Timedelta(days=date_tol)
         for ridx, rec in rec_rows:
-            if ridx not in matched_rec:
+            if ridx not in matched_rec and (pd.notna(rec["date"]) and lo <= rec["date"] <= hi):
                 rec = rec.copy()
                 rec["_amt"] = abs(float(rec["amount"]))
                 findings.append(_missing_deposit(entity_id, rec, nonprofit))

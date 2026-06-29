@@ -226,6 +226,11 @@ _FSB_DATE_MAX_X0 = 90      # the M/D date sits at x0 ~50
 _FSB_AMT_MAX_X0 = 170      # amount fragments fall in [90,170); description begins
                            #   at ~172 (credits) / ~188 (debits)
 _FSB_GRID_SPLITS = (230, 410)   # checks grid: three column groups, split by x0
+# Within each checks-grid column, the amount sub-column begins at this x0. Tokens
+# left of it are the check number, right of it the amount — so a check number split
+# across word fragments ('7' '568' → 7568) and a split amount ('7' '91.' '15' →
+# 791.15) are each reassembled from their own band instead of by token order.
+_FSB_CHECK_AMT_X0 = (140, 322, 505)
 _FSB_LINE_GAP = 4          # rows are ~10pt apart; a superscripted break-marker '*'
                            #   sits ~0.25pt off its row. Cluster words by vertical
                            #   gap (4 > intra-row jitter, < inter-row spacing) so a
@@ -233,8 +238,11 @@ _FSB_LINE_GAP = 4          # rows are ~10pt apart; a superscripted break-marker 
 
 _FSB_DATE_RE = re.compile(r"^\d{1,2}/\d{1,2}$")
 _FSB_AMT_RE = re.compile(r"^[\d,]*\.\d{2}$")     # allows sub-dollar '.25' (no lead digit)
-_FSB_CHECKNO_RE = re.compile(r"^\d+\*?$")        # trailing '*' = break in check sequence
 _FSB_STMT_DATE_RE = re.compile(r"Statement Date:\s*(\d{1,2})-(\d{1,2})-(\d{2})")
+# Printed summary totals, used to self-check the parse: "Deposits / Misc Credits
+# 37 2,661,881.17" and "Withdrawals / Misc Debits 196 2,661,888.02".
+_FSB_SUMMARY_CREDITS = re.compile(r"Deposits\s*/?\s*Misc\s*Credits\s+(\d+)\s+([\d,]+\.\d{2})", re.I)
+_FSB_SUMMARY_DEBITS = re.compile(r"Withdrawals\s*/?\s*Misc\s*Debits\s+(\d+)\s+([\d,]+\.\d{2})", re.I)
 
 
 def _fsb_cluster_rows(words: list[dict]) -> list[list[dict]]:
@@ -344,23 +352,27 @@ def _fsb_parse_txn_row(row, section, stmt_month, stmt_year) -> dict | None:
 
 
 def _fsb_parse_check_row(row, stmt_month, stmt_year) -> list[dict]:
-    """A checks-grid line carries up to three (date, check no, amount) triples,
-    one per column group. Checks are disbursements → negative amounts."""
+    """A checks-grid line carries up to three (date, check no, amount) triples, one
+    per column group. Within a group the check number and amount are split by their
+    own x-sub-column (not token order), because either can arrive as spaced word
+    fragments ('7' '568' → check 7568; '7' '91.' '15' → $791.15). Checks are
+    disbursements → negative amounts."""
     groups: list[list[dict]] = [[], [], []]
     for w in row:
         g = 0 if w["x0"] < _FSB_GRID_SPLITS[0] else (1 if w["x0"] < _FSB_GRID_SPLITS[1] else 2)
         groups[g].append(w)
     out: list[dict] = []
-    for grp in groups:
+    for gi, grp in enumerate(groups):
         if len(grp) < 3:
             continue
-        date, checkno, *rest = grp
-        if not _FSB_DATE_RE.match(date["text"]) or not _FSB_CHECKNO_RE.match(checkno["text"]):
+        date = grp[0]
+        if not _FSB_DATE_RE.match(date["text"]):
             continue
-        amt = _fsb_amount(rest)
-        if not amt:
+        amt_x0 = _FSB_CHECK_AMT_X0[gi]
+        number = "".join(w["text"] for w in grp[1:] if w["x0"] < amt_x0).replace(" ", "").rstrip("*")
+        amt = _fsb_amount([w for w in grp[1:] if w["x0"] >= amt_x0])
+        if not number.isdigit() or not amt:
             continue
-        number = checkno["text"].rstrip("*")
         out.append({
             "date": _fsb_iso(date["text"], stmt_month, stmt_year),
             "description": f"Check {number}",
@@ -375,8 +387,47 @@ def _fsb_frame(records: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(records, columns=cols)
 
 
+def first_service_summary_totals(pages: list[list[dict]]) -> dict:
+    """The statement's printed control totals, for self-checking the parse:
+    {credit_count, credit_total, debit_count, debit_total} (missing keys if a line
+    isn't found). Pure — operates on word boxes."""
+    out: dict = {}
+    for words in pages:
+        for row in _fsb_cluster_rows(words):
+            text = " ".join(w["text"] for w in row)
+            mc = _FSB_SUMMARY_CREDITS.search(text)
+            if mc and "credit_total" not in out:
+                out["credit_count"] = int(mc.group(1))
+                out["credit_total"] = float(mc.group(2).replace(",", ""))
+            md = _FSB_SUMMARY_DEBITS.search(text)
+            if md and "debit_total" not in out:
+                out["debit_count"] = int(md.group(1))
+                out["debit_total"] = float(md.group(2).replace(",", ""))
+        if "credit_total" in out and "debit_total" in out:
+            break
+    return out
+
+
+def first_service_self_check(frame: pd.DataFrame, expected: dict, tol: float = 0.01) -> list[str]:
+    """Compare parsed credit/debit sums to the statement's printed totals; return a
+    list of human-readable mismatch messages (empty when it reconciles). Credits are
+    positive rows, debits negative."""
+    msgs: list[str] = []
+    credits, debits = frame[frame["amount"] > 0], frame[frame["amount"] < 0]
+    got_credit, got_debit = round(credits["amount"].sum(), 2), round(-debits["amount"].sum(), 2)
+    if expected.get("credit_total") is not None and abs(got_credit - expected["credit_total"]) > tol:
+        msgs.append(f"credits parsed {got_credit:,.2f} ({len(credits)}) vs printed "
+                    f"{expected['credit_total']:,.2f} ({expected.get('credit_count')})")
+    if expected.get("debit_total") is not None and abs(got_debit - expected["debit_total"]) > tol:
+        msgs.append(f"debits parsed {got_debit:,.2f} ({len(debits)}) vs printed "
+                    f"{expected['debit_total']:,.2f} ({expected.get('debit_count')})")
+    return msgs
+
+
 def _read_first_service_pdf(path: str | Path) -> pd.DataFrame:
-    """Open a First Service Bank PDF and feed its word boxes to the pure parser."""
+    """Open a First Service Bank PDF and feed its word boxes to the pure parser.
+    Logs a warning if the parsed sums don't reconcile to the statement's printed
+    control totals — a loud signal that a statement parsed incompletely."""
     try:
         import pdfplumber  # lazy: optional dependency
     except ImportError as exc:  # pragma: no cover - exercised only without the dep
@@ -386,7 +437,12 @@ def _read_first_service_pdf(path: str | Path) -> pd.DataFrame:
     with pdfplumber.open(path) as pdf:
         pages = [page.extract_words(x_tolerance=1, keep_blank_chars=False)
                  for page in pdf.pages]
-    return parse_first_service_words(pages)
+    frame = parse_first_service_words(pages)
+    mismatches = first_service_self_check(frame, first_service_summary_totals(pages))
+    if mismatches:
+        print(f"  ! Statement parse self-check failed for {Path(path).name} — "
+              "did not reconcile to printed totals: " + "; ".join(mismatches))
+    return frame
 
 
 # Per-bank PDF layout parsers: path -> DataFrame[date, description, amount, check_no].

@@ -69,6 +69,25 @@ def test_unrecorded_and_outstanding(findings):
     assert by_check["1003"] == "HIGH"       # recorded, never cleared
 
 
+def test_recorded_check_outside_bank_window_not_flagged(registry, config):
+    # A check recorded months before the earliest statement can't be confirmed
+    # cleared from the data we hold, so it must NOT be flagged "never cleared".
+    extra = pd.DataFrame([{"source_id": "TX-OLD", "txn_type": "check",
+                           "date": pd.Timestamp("2026-01-02"), "vendor_name": "Old Vendor",
+                           "amount": 750.0, "check_no": "0500", "entity_id": "alpha"}])
+    books = pd.concat([_books(), extra], ignore_index=True)
+    findings = reconcile(books, _bank(registry), registry, config)
+    flagged = {f.details.get("check_no") for f in by_rule(findings, "T4-02")}
+    assert "0500" not in flagged            # out of bank window → not flagged
+    assert "1003" in flagged                # in-window outstanding → still flagged
+
+
+def test_bank_side_findings_carry_cleared_date(findings):
+    crit = next(f for f in by_rule(findings, "T4-02") if str(f.severity) == "CRITICAL")
+    assert crit.details["cleared_date"] == "2026-05-12"   # bank clear date of check 1009
+    assert by_rule(findings, "T4-09")[0].details["cleared_date"] == "2026-05-18"
+
+
 def test_non_check_sweep_and_gap(findings):
     sweep = by_rule(findings, "T4-09")
     assert len(sweep) == 1 and sweep[0].details["amount"] == 2500.0
