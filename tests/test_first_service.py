@@ -188,6 +188,11 @@ def test_self_check_flags_total_mismatch():
     assert len(msgs) == 1 and "debits" in msgs[0]
     # matching totals → no messages
     assert first_service_self_check(frame, {"credit_total": 100.0, "debit_total": 50.0}) == []
+    # total matches but row count is wrong → still flagged (a missed line offset by
+    # a duplicated one would otherwise reconcile silently)
+    cm = first_service_self_check(frame, {"credit_total": 100.0, "credit_count": 9,
+                                          "debit_total": 50.0, "debit_count": 1})
+    assert len(cm) == 1 and "credits" in cm[0]
 
 
 def test_legacy_layout_is_rejected():
