@@ -108,6 +108,44 @@ def test_persist_assessments_skips_findings_not_in_history():
     assert len(store.load_prior()) == 0
 
 
+class _FakeTable:
+    """Records calls so we can assert the Supabase write shape without a client."""
+    def __init__(self):
+        self.updates, self.upserts, self._payload = [], [], None
+
+    def update(self, payload):
+        self._payload = payload
+        return self
+
+    def eq(self, column, value):
+        self.updates.append((column, value, self._payload))
+        return self
+
+    def upsert(self, *args, **kwargs):       # must never be used by persist_assessments
+        self.upserts.append((args, kwargs))
+        return self
+
+    def execute(self):
+        return None
+
+
+def test_supabase_persist_assessments_updates_never_inserts():
+    # Regression: an upsert with a {fingerprint, ai_assessment} payload INSERTS a
+    # partial row (null rule_id) for a not-yet-present fingerprint. persist_assessments
+    # must UPDATE by fingerprint instead, so a missing row is a no-op, not a crash.
+    from persistence.supabase_store import SupabaseFindingsStore
+    store = SupabaseFindingsStore.__new__(SupabaseFindingsStore)
+    store._table = _FakeTable()
+    f = Finding("T1-01", Severity.HIGH, ["alpha"], "?", transactions=["TX-1"])
+    f.ai_assessment = "duplicate of last week's payment"
+    blank = Finding("T1-02", Severity.HIGH, ["alpha"], "?", transactions=["TX-2"])  # no assessment
+
+    store.persist_assessments([f, blank])
+    assert store._table.upserts == []                                # never inserts
+    assert store._table.updates == [
+        ("fingerprint", f.fingerprint(), {"ai_assessment": "duplicate of last week's payment"})]
+
+
 # ---------------------------------------------------------------- disposition memory
 
 def test_no_prior_is_noop(ctx, registry, findings):
