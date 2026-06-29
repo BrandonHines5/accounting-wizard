@@ -22,8 +22,12 @@ decided by the entity's registry `legal_type`, never its name — onboarding a
 501(c)(3) needs only a registry entry. `reconcile_all` runs both sides.
 
 Check-image vision reads (T4-03/04/05 payee and endorsement) are a later slice.
-Reconciliation is per entity; multi-account splitting by `account_fingerprint`
-comes with statement extraction.
+Reconciliation is per entity across all the entity's ingested accounts pooled
+together. Because a check number is unique only within one account, the check
+match prefers the amount-consistent book entry — so a number reused across two
+accounts (e.g. operating + Ozk) pairs correctly instead of raising a false
+alteration. A check drawn on an account that hasn't been ingested can't be
+matched, so every operated account must be registered in config/bank_accounts.yaml.
 """
 from __future__ import annotations
 
@@ -113,7 +117,13 @@ def reconcile(
                              "cleared_date": str(line["date"].date()),
                              "bank_ref": _bank_ref(line)}))
                 continue
-            book = cands.iloc[0]
+            # A check number is unique only WITHIN a bank account, but an entity can
+            # run several accounts (e.g. operating + Ozk) whose numbers collide. Prefer
+            # the candidate whose recorded amount matches the cleared amount, so a
+            # collision pairs the right entry instead of an arbitrary one — only a
+            # same-number entry with NO amount-compatible match is a genuine alteration.
+            amt_match = cands[(cands["_amt"] - line["_amt"]).abs() <= amount_tol]
+            book = (amt_match if not amt_match.empty else cands).iloc[0]
             matched.add(str(book["source_id"]))
             if abs(line["_amt"] - book["_amt"]) > amount_tol:
                 findings.append(Finding(
