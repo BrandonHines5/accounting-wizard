@@ -2,7 +2,8 @@
 local-directory backend and the SharePoint/Graph backend (with a fake session)."""
 import pandas as pd
 
-from bank.check_image_source import GraphCheckImages, LocalCheckImages
+from bank.check_image_source import (GraphCheckImages, LocalCheckImages,
+                                     PdfStatementCheckImages)
 from bank.model import validate_bank_transactions
 
 
@@ -59,6 +60,24 @@ def test_patterns_with_placeholders(registry, tmp_path):
     out = src.attach(_bank(registry)).set_index("check_no")
     assert out.loc["2001", "image_ref"] == str(tmp_path / "alpha" / "op-2001.jpg")
     assert pd.isna(out.loc["2002", "image_ref"])
+
+
+# --- Statement-PDF backend (images rendered out of the statement itself) --------
+
+def test_pdf_statement_attach_and_read(registry):
+    src = PdfStatementCheckImages({"2001": b"\xff\xd8FRONT"}, label="operating")
+    out = src.attach(_bank(registry)).set_index("check_no")
+    assert out.loc["2001", "image_ref"] == "2001"        # locator is the check number
+    assert pd.isna(out.loc["2002", "image_ref"])         # no image for 2002 → cleared
+    assert pd.isna(out.loc["", "image_ref"])             # deposit row untouched
+    assert src.read_front("2001") == b"\xff\xd8FRONT"
+    assert src.media_type == "image/jpeg"
+
+
+def test_pdf_statement_has_no_endorsement_backs(registry):
+    # The statement carries only check fronts, so back (endorsement) reads are skipped.
+    src = PdfStatementCheckImages({"2001": b"FRONT"})
+    assert src.read_back(_bank(registry).iloc[0]) is None
 
 
 # --- Graph backend (no network: injected fake session + token) ------------------
