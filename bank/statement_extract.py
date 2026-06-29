@@ -289,6 +289,16 @@ def parse_first_service_words(pages: list[list[dict]]) -> pd.DataFrame:
                 if m:
                     stmt_month, _, yy = (int(g) for g in m.groups())
                     stmt_year = 2000 + yy
+            # Reject the older pre-2025-05 First Service layout (a single "Credits
+            # and Miscellaneous Debits" section, no embedded check images) — its
+            # geometry differs and is not yet supported. Raising (rather than
+            # returning zero rows) means extract_account logs the file as skipped,
+            # so legacy statements never silently vanish from the run.
+            if "Credits and Miscellaneous Debits" in text:
+                raise ValueError(
+                    "First Service legacy statement layout (pre-2025-05, 'Credits and "
+                    "Miscellaneous Debits') is not yet supported by the "
+                    "first_service_bank parser")
             # Section transitions. The checks grid and the daily-balance table both
             # look like dated rows, so the markers are what keep them apart.
             if "Deposits and Other Credits" in text:

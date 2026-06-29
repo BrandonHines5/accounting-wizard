@@ -161,6 +161,17 @@ def test_extract_pdf_unknown_layout_raises(registry, tmp_path):
                     known_entity_ids={e.id for e in registry}, layout="nope")
 
 
+def test_legacy_layout_is_rejected():
+    # The pre-2025-05 First Service layout ("Credits and Miscellaneous Debits")
+    # must raise so extract_account logs it as skipped, not silently return nothing.
+    p = Page()
+    p.row(("Statement", 50), ("Date:", 120), ("11-30-24", 200))
+    p.row(("Credits", 50), ("and", 110), ("Miscellaneous", 150), ("Debits", 240))
+    p.row(("11/01", 50), ("30,805.50", 110), ("BUILDERTREND", 188))
+    with pytest.raises(ValueError, match="legacy statement layout"):
+        parse_first_service_words([p.words])
+
+
 def test_check_image_anchors_match_caption_triples():
     # An image-page row with two columns: left has the usual date+check+amount
     # caption; right has check+amount with NO leading date (the 8106 case).
