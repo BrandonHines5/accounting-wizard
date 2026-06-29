@@ -71,7 +71,7 @@ def _to_amount(series: pd.Series) -> pd.Series:
 def _signed_amount(rows: pd.DataFrame, columns: dict) -> pd.Series:
     """Resolve the signed amount (negative = disbursement) from either a single
     signed `amount` column or a `debit`/`credit` pair (positive magnitudes;
-    signed = credit − debit)."""
+    signed = credit - debit)."""
     amount_col, debit_col, credit_col = (columns.get("amount"),
                                          columns.get("debit"), columns.get("credit"))
     present = [c for c in (amount_col, debit_col, credit_col) if c and c in rows.columns]
@@ -288,7 +288,7 @@ def parse_first_service_words(pages: list[list[dict]], *, diag: dict | None = No
     `pages` is one list of word dicts (keys: text, x0, x1, top) per page, in order —
     exactly what pdfplumber's `extract_words` returns. Pure and deterministic, so it
     is unit-tested against synthetic layouts. Returns a DataFrame with canonical
-    `date` (ISO), `description`, `amount` (signed: credits +, debits/checks −) and
+    `date` (ISO), `description`, `amount` (signed: credits +, debits/checks -) and
     `check_no`; `normalize_register` does the hashing, validation and noise drop.
 
     Pass `diag` (a dict) to collect aggregate parse counters — per-section row counts,
