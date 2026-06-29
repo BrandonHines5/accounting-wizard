@@ -91,6 +91,19 @@ class SupabaseFindingsStore(FindingsStore):
             self._table.upsert(rows[start:start + _CHUNK], on_conflict="fingerprint",
                                ignore_duplicates=True).execute()
 
+    def persist_assessments(self, findings: list[Finding]) -> None:
+        """Update ONLY ai_assessment on existing rows (merge-duplicates with a
+        two-column payload, so disposition and every other field are left untouched).
+        Call AFTER save() so every fingerprint already exists — the merge then only
+        updates, never inserts a partial row. Lets incremental Tier 3 converge:
+        without it, save()'s ignore_duplicates would never store an assessment for a
+        finding whose fingerprint is already in history."""
+        rows = [{"fingerprint": f.fingerprint(), "ai_assessment": f.ai_assessment}
+                for f in findings if (f.ai_assessment or "").strip()]
+        for start in range(0, len(rows), _CHUNK):
+            self._table.upsert(rows[start:start + _CHUNK],
+                               on_conflict="fingerprint").execute()
+
     @staticmethod
     def _row(finding: Finding) -> dict:
         return {

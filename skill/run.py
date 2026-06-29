@@ -29,7 +29,7 @@ import rules  # noqa: F401  — registers all Tier 1 rule modules
 import analytics  # noqa: F401  — registers all Tier 2 statistical rules
 import bank.methodology  # noqa: F401  — lists Tier 4 on the Methodology sheet
 from rules.engine import RunContext, run_all
-from tier3 import HeuristicJudge, apply_tier3, build_packets
+from tier3 import HeuristicJudge, apply_tier3, build_packets, select_for_review
 
 
 def _maybe_pull_sharepoint(args, registry, mappings) -> None:
@@ -105,6 +105,18 @@ def _sync_sources(schema, registry, transactions, vendors) -> None:
     n_v = VendorStore.from_env(schema).save(vendors)
     n_t = TransactionStore.from_env(schema).save(transactions)
     print(f"  Synced {len(registry)} entities, {n_v} vendors, {n_t} transactions to Supabase")
+
+
+def _tier3_cap() -> int:
+    """Max NEW findings to send to Tier 3 in one run (TIER3_MAX_REVIEW, default 200;
+    0 = unlimited). Bounds wall-clock so a large first-time backlog can't exceed the
+    job time limit — the rest are reviewed on later runs as this run's reviews persist
+    and stop being re-reviewed. Already-assessed findings are carried forward for free
+    and don't count against the cap."""
+    try:
+        return max(0, int(os.environ.get("TIER3_MAX_REVIEW", "200")))
+    except ValueError:
+        return 200
 
 
 def _make_judge(mode: str, model: str | None):
@@ -450,13 +462,34 @@ def main() -> None:
                   f"(previously resolved); {len(findings)} active")
 
     judge = _make_judge(args.tier3, args.tier3_model)
+    reviewed: list = []
     if judge is not None and findings:
-        print(f"  Tier 3 review ({type(judge).__name__}) over {len(findings)} findings …")
-        packets = build_packets(findings, ctx, prior_findings=prior)
-        findings = apply_tier3(findings, packets, judge, entities_by_id)
+        # Incremental: reuse the stored assessment for findings already reviewed in a
+        # prior run; only send genuinely new ones to the model, capped per run so a
+        # large first-time backlog still finishes inside the job's time limit (the
+        # remainder is reviewed on later runs once these persist).
+        to_review, carried, deferred = select_for_review(findings, prior, _tier3_cap())
+        if to_review:
+            note = f"{len(carried)} carried forward" if carried else ""
+            if deferred:
+                note += f", {deferred} deferred to a later run" if note else \
+                        f"{deferred} deferred to a later run"
+            print(f"  Tier 3 review ({type(judge).__name__}) over {len(to_review)} new "
+                  f"finding(s){f' ({note})' if note else ''} …")
+            packets = build_packets(to_review, ctx, prior_findings=prior)
+            apply_tier3(to_review, packets, judge, entities_by_id)
+            reviewed = to_review
+        elif carried:
+            print(f"  Tier 3: all {len(carried)} findings carried forward from prior "
+                  "review; nothing new to assess.")
+        findings.sort(key=lambda f: (-int(f.severity), f.rule_id))
 
     if store is not None:
         store.save(findings)
+        # Persist this run's fresh assessments onto their (now-existing) rows so the
+        # next run recognizes them as already-reviewed and skips them.
+        if reviewed:
+            store.persist_assessments(reviewed)
 
     if args.update_baselines and args.store == "supabase":
         from analytics.baselines import vendor_share_baselines

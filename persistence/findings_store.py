@@ -48,6 +48,14 @@ class FindingsStore(ABC):
     def save(self, findings: list[Finding]) -> None:
         """Insert new fingerprints as `open`; leave existing rows untouched."""
 
+    def persist_assessments(self, findings: list[Finding]) -> None:
+        """Store the Tier 3 `ai_assessment` for findings already in history,
+        updating ONLY that column — never the disposition or any human field. This
+        lets an incremental run converge: a finding reviewed once is recognized as
+        already-assessed next run and skipped, instead of being re-reviewed forever
+        (save() leaves existing rows untouched, so it can't persist the assessment).
+        Default no-op for stores without an update path."""
+
 
 class InMemoryFindingsStore(FindingsStore):
     """Non-persistent store for tests and dry runs. Seed `prior` with
@@ -58,6 +66,14 @@ class InMemoryFindingsStore(FindingsStore):
 
     def load_prior(self) -> pd.DataFrame:
         return pd.DataFrame(self._records)
+
+    def persist_assessments(self, findings: list[Finding]) -> None:
+        by_fp = {r["fingerprint"]: r for r in self._records}
+        for f in findings:
+            assessment = (f.ai_assessment or "").strip()
+            rec = by_fp.get(f.fingerprint())
+            if assessment and rec is not None:
+                rec["ai_assessment"] = assessment   # only the assessment, never disposition
 
     def save(self, findings: list[Finding]) -> None:
         existing = {r["fingerprint"] for r in self._records}

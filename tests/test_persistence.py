@@ -83,6 +83,31 @@ def test_in_memory_store_saves_new_open_findings(ctx):
     assert len(store.load_prior()) == len(findings)
 
 
+def test_persist_assessments_updates_only_the_assessment():
+    # A finding already in history (dispositioned by a human). persist_assessments
+    # stores its Tier 3 assessment WITHOUT disturbing the disposition — this is what
+    # lets an incremental run skip it next time instead of re-reviewing it.
+    f = Finding("T1-01", Severity.CRITICAL, ["alpha"], "?", transactions=["TX-1"])
+    store = InMemoryFindingsStore([{
+        "fingerprint": f.fingerprint(), "rule_id": "T1-01", "entity_ids": ["alpha"],
+        "disposition": "escalated", "details": {}, "ai_assessment": "",
+    }])
+    f.ai_assessment = "Reviewed: likely a duplicate of last week's payment."
+    store.persist_assessments([f])
+    row = store.load_prior().iloc[0]
+    assert row["ai_assessment"] == "Reviewed: likely a duplicate of last week's payment."
+    assert row["disposition"] == "escalated"          # human field untouched
+
+
+def test_persist_assessments_skips_findings_not_in_history():
+    # No row to update (never saved) → no-op, no crash.
+    store = InMemoryFindingsStore()
+    f = Finding("T1-01", Severity.HIGH, ["alpha"], "?", transactions=["TX-9"])
+    f.ai_assessment = "x"
+    store.persist_assessments([f])
+    assert len(store.load_prior()) == 0
+
+
 # ---------------------------------------------------------------- disposition memory
 
 def test_no_prior_is_noop(ctx, registry, findings):

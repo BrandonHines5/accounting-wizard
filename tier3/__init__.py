@@ -12,6 +12,7 @@ this — it only ever annotates or re-ranks findings, never removes them, and a
 downgrade without a reason is ignored.
 """
 from tier3.context import JudgmentPacket, build_packets
+from tier3.incremental import select_for_review
 from tier3.judge import (
     HeuristicJudge,
     Judge,
@@ -26,4 +27,5 @@ __all__ = [
     "HeuristicJudge",
     "Tier3Assessment",
     "apply_tier3",
+    "select_for_review",
 ]
