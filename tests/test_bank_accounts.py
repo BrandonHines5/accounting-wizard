@@ -89,6 +89,31 @@ def test_extract_account_missing_secret_raises(registry, tmp_path, monkeypatch):
         extract_account(acct, tmp_path, _ids(registry))
 
 
+def test_extract_account_missing_secret_skips_with_on_error(registry, tmp_path, monkeypatch):
+    # With an on_error handler (the weekly-run path), a missing secret skips the
+    # account instead of raising — one account's missing number can't sink Tier 4.
+    monkeypatch.delenv("ALPHA_ACCT", raising=False)
+    errors = []
+    acct = BankAccount("alpha", "op", "ALPHA_ACCT", "alpha/*.csv")
+    out = extract_account(acct, tmp_path, _ids(registry),
+                          on_error=lambda p, e: errors.append(str(e)))
+    assert out.empty and len(errors) == 1
+
+
+def test_extract_statements_skips_account_with_missing_secret(registry, tmp_path, monkeypatch):
+    monkeypatch.setenv("ALPHA_ACCT", "11111111")
+    monkeypatch.delenv("BETA_ACCT", raising=False)        # beta's secret not provided
+    _write_csv(tmp_path / "alpha" / "m.csv", [
+        {"date": "2026-05-05", "description": "a", "amount": "-100.00", "check_no": ""}])
+    accounts = [BankAccount("alpha", "op", "ALPHA_ACCT", "alpha/*.csv"),
+                BankAccount("beta", "op", "BETA_ACCT", "beta/*.csv")]
+    errors = []
+    out = extract_statements(accounts, tmp_path, _ids(registry),
+                             on_error=lambda p, e: errors.append(str(e)))
+    assert len(out) == 1 and set(out["entity_id"]) == {"alpha"}   # beta skipped, alpha kept
+    assert len(errors) == 1
+
+
 def test_extract_statements_concatenates_accounts(registry, tmp_path, monkeypatch):
     monkeypatch.setenv("ALPHA_ACCT", "11111111")
     monkeypatch.setenv("BETA_ACCT", "22222222")

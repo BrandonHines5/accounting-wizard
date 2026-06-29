@@ -88,7 +88,14 @@ def extract_account(
     """Extract every statement file matching one account's glob into canonical
     bank_transactions. The account number is resolved first (fail fast on a missing
     secret); per-file extraction errors go to `on_error` and are skipped."""
-    number = account.account_number()        # fail fast before touching files
+    try:
+        number = account.account_number()    # resolve the secret before touching files
+    except Exception as exc:  # noqa: BLE001 — a missing/rotated secret for one account
+        # must not sink Tier 4 for every other account (matches the per-file policy).
+        if on_error is None:
+            raise                            # fail fast for non-batch callers
+        on_error(Path(account.statement_glob), exc)
+        return empty_bank_transactions()
     is_pdf = account.fmt == "pdf"
     extractor = extract_pdf if is_pdf else extract_export
     extra = {"layout": account.layout} if is_pdf else {}

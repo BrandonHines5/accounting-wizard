@@ -11,6 +11,8 @@ name: Weekly forensics run
 #   ANTHROPIC_API_KEY            (optional — enables the Tier 3 AI review)
 #   HINES_HOMES_OPERATING_ACCT   (Tier 4 — First Service Bank operating account
 #                                 number; hashed at runtime, never stored)
+#   HINES_HOMES_OZK_ACCT         (Tier 4 — Bank OZK account number; hashed at
+#                                 runtime, never stored)
 
 on:
   schedule:
@@ -54,6 +56,7 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           HINES_HOMES_OPERATING_ACCT: ${{ secrets.HINES_HOMES_OPERATING_ACCT }}
+          HINES_HOMES_OZK_ACCT: ${{ secrets.HINES_HOMES_OZK_ACCT }}
         run: python -u -m skill.run --pull-sharepoint on --store supabase --tier3 ${{ github.event.inputs.tier3 || 'auto' }}
       - name: Attach exceptions workbook
         if: always()
