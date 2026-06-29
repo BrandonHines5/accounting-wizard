@@ -25,6 +25,12 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const MODEL = Deno.env.get("ANTHROPIC_MODEL") || "claude-sonnet-4-6";
 const TIMEOUT_MS = 60_000;
+// The call's latency is dominated by OUTPUT generation (~70 tok/s), not input, so
+// bound both the candidate count and the token budget to stay well under the
+// timeout. MAX_OUTPUT_TOKENS comfortably covers MAX_REVIEW concise assessments
+// (~70 tokens each) without letting the model run to a 4k-token, ~60s generation.
+const MAX_REVIEW = 30;
+const MAX_OUTPUT_TOKENS = 2600;
 
 // Defense-in-depth egress guard for the no-raw-bank-numbers hard rule: the RPC
 // redacts disposition_note at write time, but this is the external egress to
@@ -81,13 +87,10 @@ Deno.serve(async (req) => {
     if (!openAll?.length) return json({ updated: 0, open: 0 });
 
     // Scope to the open findings the feedback can plausibly bear on: those sharing a
-    // rule_id with a dispositioned-with-reason finding. Sending every open finding
-    // (1000s) in one model call blows past the timeout (~43s succeeded, >60s failed
-    // in production); scoping keeps the payload — and latency — bounded while
-    // matching the prompt's own relevance criteria (same rule pattern / root cause).
-    // Cap the result so one very common rule can't reintroduce the timeout; the cap
-    // is surfaced in the response, never silent.
-    const MAX_REVIEW = 100;
+    // rule_id with a dispositioned-with-reason finding — matching the prompt's own
+    // relevance criteria (same rule pattern / root cause). Combined with the output
+    // budget above this keeps the model call fast and well under the timeout; the
+    // cap is surfaced in the response, never silent.
     const feedbackRules = new Set(feedback.map((f: any) => f.rule_id));
     const related = openAll.filter((f: any) => feedbackRules.has(f.rule_id));
     if (!related.length) {
@@ -106,6 +109,7 @@ Deno.serve(async (req) => {
       "- You may SUGGEST a disposition (legit | error_corrected | escalated | open) but NEVER decide it; the human does.",
       "- You do NOT set severity. If you believe a severity is wrong, say so in ai_assessment; the badge is governed elsewhere.",
       "- Only return a finding if the human feedback genuinely bears on it (same vendor, same rule pattern, same root cause). Leave unrelated findings out.",
+      "- Keep each ai_assessment to one or two sentences; do not restate the finding.",
       "Return ONLY the findings you are updating, via the update_findings tool.",
     ].join("\n");
 
@@ -164,7 +168,7 @@ Deno.serve(async (req) => {
         },
         body: JSON.stringify({
           model: MODEL,
-          max_tokens: 4096,
+          max_tokens: MAX_OUTPUT_TOKENS,
           system,
           tools: [tool],
           tool_choice: { type: "tool", name: "update_findings" },
