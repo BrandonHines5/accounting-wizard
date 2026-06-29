@@ -12,7 +12,9 @@
 //     callback-verified; nonprofit misallocation >= HIGH) are deterministic and owned
 //     by the rules / offline Tier 3 layer. apply_feedback_update only writes
 //     ai_assessment + suggested_disposition, so it can't downgrade past a floor.
-//   - Only updates OPEN findings, and only those the feedback genuinely bears on.
+//   - Only updates OPEN findings, and only those the feedback genuinely bears on:
+//     the candidate set is pre-filtered to open findings sharing a rule_id with the
+//     feedback (capped) so the model call stays well under the timeout.
 //   - A missing ANTHROPIC_API_KEY is a clean no-op (HTTP 200, {skipped}): the
 //     disposition + reason are already saved by set_finding_disposition before this
 //     runs, so the optional AI re-review must never fail the reviewer's action.
@@ -72,11 +74,28 @@ Deno.serve(async (req) => {
     // errors rather than masking a DB/permission failure as "nothing to do".
     const { data: feedback, error: fbErr } = await admin.rpc("feedback_corpus");
     if (fbErr) return json({ error: "feedback_query_failed", detail: fbErr.message }, 500);
-    const { data: open, error: openErr } = await admin.rpc("open_findings_for_review");
-    if (openErr) return json({ error: "open_query_failed", detail: openErr.message }, 500);
-
-    if (!open?.length) return json({ updated: 0, open: 0 });
     if (!feedback?.length) return json({ updated: 0, note: "no reasoned feedback yet" });
+
+    const { data: openAll, error: openErr } = await admin.rpc("open_findings_for_review");
+    if (openErr) return json({ error: "open_query_failed", detail: openErr.message }, 500);
+    if (!openAll?.length) return json({ updated: 0, open: 0 });
+
+    // Scope to the open findings the feedback can plausibly bear on: those sharing a
+    // rule_id with a dispositioned-with-reason finding. Sending every open finding
+    // (1000s) in one model call blows past the timeout (~43s succeeded, >60s failed
+    // in production); scoping keeps the payload — and latency — bounded while
+    // matching the prompt's own relevance criteria (same rule pattern / root cause).
+    // Cap the result so one very common rule can't reintroduce the timeout; the cap
+    // is surfaced in the response, never silent.
+    const MAX_REVIEW = 100;
+    const feedbackRules = new Set(feedback.map((f: any) => f.rule_id));
+    const related = openAll.filter((f: any) => feedbackRules.has(f.rule_id));
+    if (!related.length) {
+      return json({ updated: 0, considered: 0, open: openAll.length,
+                    note: "no open findings related to the feedback" });
+    }
+    const truncated = related.length > MAX_REVIEW;
+    const open = truncated ? related.slice(0, MAX_REVIEW) : related;
 
     const system = [
       "You are the Tier 3 reviewer for a forensic accounting tool.",
@@ -185,6 +204,7 @@ Deno.serve(async (req) => {
       else if (updatedFp) applied++;                         // rpc returns fp, or null if no open row
     }
     return json({ updated: applied, considered: open.length,
+                  ...(truncated ? { capped_at: MAX_REVIEW, related: related.length } : {}),
                   ...(failures.length ? { failures } : {}) });
   } catch (e) {
     return json({ error: String(e) }, 500);
