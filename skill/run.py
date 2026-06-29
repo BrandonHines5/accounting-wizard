@@ -61,6 +61,30 @@ def _maybe_pull_sharepoint(args, registry, mappings) -> None:
     total = sum(len(v) for v in pulled.values())
     print(f"  Pulled {total} file(s) across {len(pulled)} "
           f"entit{'y' if len(pulled) == 1 else 'ies'}")
+    _pull_bank_statements(args, registry, cfg)
+
+
+def _pull_bank_statements(args, registry, cfg) -> None:
+    """Pull each configured account's statements from SharePoint into the bank-dir
+    before Tier 4. Skips silently when no account names a `sharepoint_folder`."""
+    accounts_path = Path(args.bank_accounts)
+    if not accounts_path.exists():
+        return
+    from bank.accounts import load_bank_accounts
+    from ingest.sharepoint import pull_bank_statements
+
+    accounts = load_bank_accounts(accounts_path)
+    if args.entity:
+        accounts = [a for a in accounts if a.entity_id in set(args.entity)]
+    accounts = [a for a in accounts if a.sharepoint_folder]
+    if not accounts:
+        return
+    bank_dir = Path(args.bank_dir) if args.bank_dir else Path(args.data_dir) / "bank"
+    print("Pulling bank statements from SharePoint …")
+    pulled = pull_bank_statements(accounts, bank_dir, config=cfg,
+                                  on_file=lambda n, sz: print(f"  ↓ {n} ({sz // 1024} KB)"))
+    total = sum(len(v) for v in pulled.values())
+    print(f"  Pulled {total} statement file(s) across {len(pulled)} account(s)")
 
 
 def _make_store(mode: str, schema: str | None):

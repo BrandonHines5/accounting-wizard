@@ -64,8 +64,13 @@ the audit trail of what cleared plus the check reads behind the review queue.
 **Tier 4 bank reconciliation** (`--bank-dir`, `--bank-accounts`): runs only when
 `config/bank_accounts.yaml` exists (copy `config/bank_accounts.example.yaml`) and
 matching statement exports are found under `--bank-dir` (default
-`<data-dir>/bank`, gitignored). It extracts each account's register (CSV/Excel, or
-PDF with `pdfplumber`), reconciles bank ↔ books three ways (T4-02/04/06/07/08/09),
+`<data-dir>/bank`, gitignored). Statements can be pulled straight from a
+SharePoint folder per account (`sharepoint_folder`, same Graph creds as the QB
+pull) into the bank-dir before the run. It extracts each account's register
+(CSV/Excel; or PDF — generic ruled tables, or a per-bank positional `layout` for
+statements with no table lines, e.g. `first_service_bank`, the pilot bank, whose
+parser reconciles to the statement's printed deposit/withdrawal totals to the
+penny), reconciles bank ↔ books three ways (T4-02/04/06/07/08/09),
 and — when an account configures `check_images` and the images are synced under
 `--check-image-dir` (`--check-images auto/on/off`, needs `ANTHROPIC_API_KEY`) —
 reads payee, amount, and endorsement off each cancelled check (T4-03/04/05). Raw

@@ -8,7 +8,9 @@ name: Weekly forensics run
 # (Settings → Secrets and variables → Actions → New repository secret):
 #   GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET, GRAPH_DRIVE_ID
 #   SUPABASE_URL, SUPABASE_SERVICE_KEY
-#   ANTHROPIC_API_KEY   (optional — enables the Tier 3 AI review)
+#   ANTHROPIC_API_KEY            (optional — enables the Tier 3 AI review)
+#   HINES_HOMES_OPERATING_ACCT   (Tier 4 — First Service Bank operating account
+#                                 number; hashed at runtime, never stored)
 
 on:
   schedule:
@@ -38,8 +40,10 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Configure SharePoint pull
-        run: cp config/sharepoint.example.yaml config/sharepoint.yaml
+      - name: Configure SharePoint pull + Tier 4 accounts
+        run: |
+          cp config/sharepoint.example.yaml config/sharepoint.yaml
+          cp config/bank_accounts.example.yaml config/bank_accounts.yaml
       - name: Pull exports + run the detection battery
         env:
           GRAPH_TENANT_ID: ${{ secrets.GRAPH_TENANT_ID }}
@@ -49,6 +53,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          HINES_HOMES_OPERATING_ACCT: ${{ secrets.HINES_HOMES_OPERATING_ACCT }}
         run: python -u -m skill.run --pull-sharepoint on --store supabase --tier3 ${{ github.event.inputs.tier3 || 'auto' }}
       - name: Attach exceptions workbook
         if: always()
