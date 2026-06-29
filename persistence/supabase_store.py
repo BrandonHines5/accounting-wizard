@@ -92,17 +92,22 @@ class SupabaseFindingsStore(FindingsStore):
                                ignore_duplicates=True).execute()
 
     def persist_assessments(self, findings: list[Finding]) -> None:
-        """Update ONLY ai_assessment on existing rows (merge-duplicates with a
-        two-column payload, so disposition and every other field are left untouched).
-        Call AFTER save() so every fingerprint already exists — the merge then only
-        updates, never inserts a partial row. Lets incremental Tier 3 converge:
+        """Update ONLY ai_assessment on existing rows, one fingerprint at a time.
+
+        Uses UPDATE (not upsert): an upsert with a two-column payload would INSERT a
+        partial row — null rule_id, NOT-NULL violation — for any fingerprint not yet
+        present; UPDATE simply matches zero rows and is a no-op there. Disposition and
+        every other column are left untouched. Lets incremental Tier 3 converge:
         without it, save()'s ignore_duplicates would never store an assessment for a
-        finding whose fingerprint is already in history."""
-        rows = [{"fingerprint": f.fingerprint(), "ai_assessment": f.ai_assessment}
-                for f in findings if (f.ai_assessment or "").strip()]
-        for start in range(0, len(rows), _CHUNK):
-            self._table.upsert(rows[start:start + _CHUNK],
-                               on_conflict="fingerprint").execute()
+        finding whose fingerprint is already in history, so it would be re-reviewed
+        forever. (New findings already carry their assessment from save()'s insert;
+        re-updating them here is a harmless no-op-equivalent.)"""
+        for f in findings:
+            assessment = (f.ai_assessment or "").strip()
+            if not assessment:
+                continue
+            self._table.update({"ai_assessment": assessment}) \
+                .eq("fingerprint", f.fingerprint()).execute()
 
     @staticmethod
     def _row(finding: Finding) -> dict:
