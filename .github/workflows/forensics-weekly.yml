@@ -24,7 +24,9 @@ on:
         type: choice
         default: auto
         options:
-          - auto        # Claude (Sonnet) review — full quality, slower on big batches
+          - auto        # Claude (Sonnet) review — full quality, capped per run
+          - batch       # Claude via the Message Batches API — half cost, uncapped;
+                        # use to clear a large backlog (first run / stub re-review)
           - heuristic   # deterministic offline triage — no API, completes in minutes
           - "off"       # skip Tier 3 entirely
 
@@ -51,12 +53,14 @@ jobs:
           GRAPH_TENANT_ID: ${{ secrets.GRAPH_TENANT_ID }}
           GRAPH_CLIENT_ID: ${{ secrets.GRAPH_CLIENT_ID }}
           GRAPH_CLIENT_SECRET: ${{ secrets.GRAPH_CLIENT_SECRET }}
-          GRAPH_DRIVE_ID: ${{ secrets.GRAPH_DRIVE_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GRAPH_DRIVE_ID: ${{ secrets.GRAPH_DRIVE_ID }}
           HINES_HOMES_OPERATING_ACCT: ${{ secrets.HINES_HOMES_OPERATING_ACCT }}
           HINES_HOMES_OZK_ACCT: ${{ secrets.HINES_HOMES_OZK_ACCT }}
+          # batch mode exists to drain a backlog in one run — lift the per-run cap
+          TIER3_MAX_REVIEW: ${{ github.event.inputs.tier3 == 'batch' && '0' || '200' }}
         run: python -u -m skill.run --pull-sharepoint on --store supabase --tier3 ${{ github.event.inputs.tier3 || 'auto' }}
       - name: Attach exceptions workbook
         if: always()
