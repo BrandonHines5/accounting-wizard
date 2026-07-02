@@ -59,3 +59,54 @@ def test_cap_does_not_count_carried_findings():
         [assessed1, fresh1, assessed2, fresh2], prior, max_review=2)
     assert carried == [assessed1, assessed2]
     assert to_review == [fresh1, fresh2] and deferred == 0
+
+
+# --------------------------------------------------- provenance (stub lockout)
+
+_STUB = "Deterministic T1-01 flag confirmed; no model review applied. Verify."
+_FAILED = "Tier 3 review unavailable for this finding (TimeoutError); routed unchanged."
+
+
+def test_heuristic_stub_is_rereviewed_by_a_model_judge():
+    # The lockout bug: a heuristic stub stored as the assessment must NOT count
+    # as reviewed once a real model judge is available.
+    a = _f("T1-01", "TX-A")
+    prior = _prior([(a.fingerprint(), _STUB)])          # legacy row, no ai_judge col
+    to_review, carried, _ = select_for_review([a], prior, max_review=0, judge_kind="model")
+    assert to_review == [a] and carried == []
+
+
+def test_failed_assessment_is_rereviewed_by_a_model_judge():
+    a = _f("T1-01", "TX-A")
+    prior = _prior([(a.fingerprint(), _FAILED)])
+    to_review, carried, _ = select_for_review([a], prior, max_review=0, judge_kind="model")
+    assert to_review == [a] and carried == []
+
+
+def test_heuristic_stub_is_carried_when_judge_is_heuristic():
+    # No model available → the stub is the best we have; don't churn.
+    a = _f("T1-01", "TX-A")
+    prior = _prior([(a.fingerprint(), _STUB)])
+    to_review, carried, _ = select_for_review([a], prior, max_review=0,
+                                              judge_kind="heuristic")
+    assert carried == [a] and to_review == []
+    assert a.ai_judge == "heuristic"
+
+
+def test_ai_judge_column_wins_over_text_inference():
+    a, b = _f("T1-01", "TX-A"), _f("T1-02", "TX-B")
+    prior = pd.DataFrame([
+        {"fingerprint": a.fingerprint(), "ai_assessment": "real model review",
+         "ai_judge": "model", "false_positive_probability": 0.85,
+         "recommended_action": "clear"},
+        {"fingerprint": b.fingerprint(), "ai_assessment": "looks fine honestly",
+         "ai_judge": "heuristic", "false_positive_probability": None,
+         "recommended_action": None},
+    ])
+    to_review, carried, _ = select_for_review([a, b], prior, max_review=0,
+                                              judge_kind="model")
+    assert carried == [a] and to_review == [b]
+    # carried findings get their stored triage back for the workbook/UI
+    assert a.false_positive_probability == 0.85
+    assert a.recommended_action == "clear"
+    assert a.ai_judge == "model"

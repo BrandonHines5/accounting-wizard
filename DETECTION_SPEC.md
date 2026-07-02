@@ -104,6 +104,16 @@ output. Tier 3 may downgrade but never silently delete a CRITICAL finding.
 
 Monthly per entity per account.
 
+**Coverage scoping (both directions):** book→bank findings are asserted only
+inside the window the statements cover; bank→book findings only inside the
+window the BOOKS cover. Bank lines outside books coverage (e.g. a multi-year
+statement backfill predating the earliest book export) roll up into ONE INFO
+coverage-gap note (T4-01) per entity/side instead of per-line CRITICALs.
+Check-number matches are date-constrained (`check_match_max_days`) because
+numbers recycle over an account's life. Unmatched lines below
+`bank_min_critical_amount` surface as INFO. The deposit side is skipped (with an
+INFO ingest-gap note) for an entity whose books contain no receipt transactions.
+
 | ID | Check | Logic | Severity |
 |---|---|---|---|
 | T4-01 | Statement extraction | Parse statement register: date, description, amount, check no. | — (pipeline) |
@@ -128,8 +138,12 @@ Images stay in SharePoint (restricted); Supabase stores reads + path reference o
 2. **Segregation-of-duties monitoring** — map who-creates / who-approves / who-pays
    from QB Audit Trail + Adaptive history; flag concentration. Small family company
    = imperfect segregation = detective controls matter more, not less.
-3. **Disposition memory** — a cleared finding never resurfaces; a repeated pattern
-   after clearing escalates instead.
+3. **Disposition memory** — a cleared finding never resurfaces. A repeated
+   pattern after clearing follows the rule's recurrence policy: fraud-pattern
+   rules (T1-01/02/04/12/14, T4-03/04/05) escalate; cadence/operational rules
+   (T1-07/08/20/22, T2-10, T4-02/06/09) suppress the recurrence with the
+   reviewer's original reason attached (CRITICALs are never auto-suppressed);
+   everything else passes through annotated with the prior reason.
 4. **Tone** — findings are written as questions to verify, not accusations.
    Errors will outnumber fraud 100:1.
 5. **Entity-agnostic by construction** — every rule consumes the entity registry;

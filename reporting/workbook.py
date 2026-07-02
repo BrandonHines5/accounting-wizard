@@ -26,12 +26,42 @@ def findings_frame(findings: list[Finding]) -> pd.DataFrame:
     return pd.DataFrame([f.to_row() for f in findings])
 
 
+def rule_precision_frame(prior: pd.DataFrame | None) -> pd.DataFrame:
+    """Per-rule disposition history: how many findings each rule produced and how
+    the human calls came out. 'Real-issue rate' = (error_corrected + escalated) /
+    all dispositioned — the number that says which thresholds in rules.yaml to
+    tune next. Empty frame when history is missing or malformed; rules with only
+    open findings still get a row (blank rate) so coverage stays visible."""
+    if (prior is None or len(prior) == 0
+            or "rule_id" not in prior.columns or "disposition" not in prior.columns):
+        return pd.DataFrame()
+    counts = (prior.assign(disposition=prior["disposition"].astype(str))
+              .groupby(["rule_id", "disposition"]).size().unstack(fill_value=0))
+    for col in ("open", "legit", "error_corrected", "escalated"):
+        if col not in counts.columns:
+            counts[col] = 0
+    dispositioned = counts["legit"] + counts["error_corrected"] + counts["escalated"]
+    real = counts["error_corrected"] + counts["escalated"]
+    out = pd.DataFrame({
+        "Rule ID": counts.index,
+        "Open": counts["open"].values,
+        "Cleared as legit": counts["legit"].values,
+        "Error corrected": counts["error_corrected"].values,
+        "Escalated": counts["escalated"].values,
+        "Real-issue rate": [
+            f"{r / d:.0%}" if d else ""
+            for r, d in zip(real.values, dispositioned.values, strict=True)],
+    }).sort_values("Rule ID").reset_index(drop=True)
+    return out
+
+
 def write_workbook(
     findings: list[Finding],
     registry: EntityRegistry,
     output_path: Path | str,
     run_label: str | None = None,
     suppressed: list[Finding] | None = None,
+    prior: pd.DataFrame | None = None,
 ) -> Path:
     suppressed = suppressed or []
     output_path = Path(output_path)
@@ -73,6 +103,11 @@ def write_workbook(
         if suppressed:
             findings_frame(suppressed).to_excel(
                 writer, sheet_name="Dispositioned", index=False)
+        # Per-rule precision from history: the tuning feedback loop. Only added
+        # when there IS history, so the default workbook shape is unchanged.
+        precision = rule_precision_frame(prior)
+        if len(precision):
+            precision.to_excel(writer, sheet_name="Rule Precision", index=False)
         tier3_reviewed = sum(1 for f in findings if f.ai_assessment)
         pd.DataFrame([
             {"Run": run_label,

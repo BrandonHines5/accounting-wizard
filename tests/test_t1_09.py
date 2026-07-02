@@ -86,3 +86,58 @@ def test_vendor_with_no_bills_is_skipped(registry, config):
     # No invoices on file for this vendor → not an AP/invoice vendor → not our rule.
     rows = [_txn("P1", "Cash Co", "check", "2026-05-10", 2000.00)]
     assert _run(rows, registry, config) == []
+
+
+def test_payment_net_of_credit_memo_is_clean(registry, config):
+    # A $1,000 bill with a $200 credit memo, paid with an $800 check: the payment
+    # matches no bill exactly, but fits the outstanding balance net of credits.
+    rows = [
+        _txn("B1", "Credit Co", "bill", "2026-05-01", 1000.00),
+        _txn("C1", "Credit Co", "credit_memo", "2026-05-03", -200.00),
+        _txn("P1", "Credit Co", "bill_payment", "2026-05-10", 800.00),
+    ]
+    assert _run(rows, registry, config) == []
+
+
+def test_on_account_payment_across_bills_is_clean(registry, config):
+    # $6,000 payment against three open bills (2k+2k+3k = 7k outstanding): larger
+    # than any single bill and matching no combo, but within the balance —
+    # on-account, not an exception.
+    rows = [
+        _txn("B1", "OnAcct Co", "bill", "2026-05-01", 2000.00),
+        _txn("B2", "OnAcct Co", "bill", "2026-05-02", 2000.00),
+        _txn("B3", "OnAcct Co", "bill", "2026-05-03", 3000.00),
+        _txn("P1", "OnAcct Co", "bill_payment", "2026-05-10", 6000.00),
+    ]
+    assert _run(rows, registry, config) == []
+
+
+def test_on_account_consumption_is_partial_not_greedy(registry, config):
+    # The $6,000 on-account payment must consume exactly $6,000 of the $7,000
+    # open — leaving a $1,000 remainder a follow-up payment reconciles against.
+    # Greedy full-bill consumption would wrongly flag P2.
+    rows = [
+        _txn("B1", "Rollfwd Co", "bill", "2026-05-01", 2000.00),
+        _txn("B2", "Rollfwd Co", "bill", "2026-05-02", 2000.00),
+        _txn("B3", "Rollfwd Co", "bill", "2026-05-03", 3000.00),
+        _txn("P1", "Rollfwd Co", "bill_payment", "2026-05-10", 6000.00),
+        _txn("P2", "Rollfwd Co", "bill_payment", "2026-05-17", 1000.00),
+    ]
+    assert _run(rows, registry, config) == []
+
+
+def test_unmatched_payments_aggregate_to_one_finding_per_vendor(registry, config):
+    # Two unsupported payments to one vendor → ONE finding carrying both, so the
+    # reviewer answers one question, not one per check.
+    rows = [
+        _txn("B1", "Agg Co", "bill", "2026-05-01", 500.00),
+        _txn("P1", "Agg Co", "bill_payment", "2026-05-05", 500.00),
+        _txn("P2", "Agg Co", "bill_payment", "2026-05-12", 900.00),
+        _txn("P3", "Agg Co", "bill_payment", "2026-05-19", 400.00),
+    ]
+    hits = _run(rows, registry, config)
+    assert len(hits) == 1
+    assert set(hits[0].transactions) == {"P2", "P3"}
+    assert hits[0].details["payments"] == 2
+    assert hits[0].details["total"] == 1300.0
+    assert "1,300.00" in hits[0].question

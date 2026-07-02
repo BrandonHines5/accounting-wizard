@@ -25,9 +25,11 @@ from persistence.findings_store import FindingsStore
 DEFAULT_SCHEMA = "financial_forensics"
 _CHUNK = 500          # upsert findings in batches (a full battery run is large)
 # Read back everything save() writes, so persistence-backed Tier 3 sees its own
-# prior review context (transaction_refs + ai_assessment) on the next run.
+# prior review context (transaction_refs + assessment + triage + provenance) on
+# the next run.
 _SELECT = ("fingerprint,rule_id,severity,entity_ids,disposition,disposition_note,"
-           "details,question,transaction_refs,ai_assessment")
+           "details,question,transaction_refs,ai_assessment,"
+           "false_positive_probability,recommended_action,ai_judge")
 
 # Hard rule (CLAUDE.md): never persist check/statement images or raw bank account
 # numbers — only reads, SharePoint path references, and hashed fingerprints. This
@@ -92,12 +94,13 @@ class SupabaseFindingsStore(FindingsStore):
                                ignore_duplicates=True).execute()
 
     def persist_assessments(self, findings: list[Finding]) -> None:
-        """Update ONLY ai_assessment on existing rows, one fingerprint at a time.
+        """Update ONLY the Tier 3 columns (assessment + triage + provenance) on
+        existing rows, one fingerprint at a time.
 
-        Uses UPDATE (not upsert): an upsert with a two-column payload would INSERT a
+        Uses UPDATE (not upsert): an upsert with a partial payload would INSERT a
         partial row — null rule_id, NOT-NULL violation — for any fingerprint not yet
         present; UPDATE simply matches zero rows and is a no-op there. Disposition and
-        every other column are left untouched. Lets incremental Tier 3 converge:
+        every other human field are left untouched. Lets incremental Tier 3 converge:
         without it, save()'s ignore_duplicates would never store an assessment for a
         finding whose fingerprint is already in history, so it would be re-reviewed
         forever. (New findings already carry their assessment from save()'s insert;
@@ -106,7 +109,7 @@ class SupabaseFindingsStore(FindingsStore):
             assessment = (f.ai_assessment or "").strip()
             if not assessment:
                 continue
-            self._table.update({"ai_assessment": assessment}) \
+            self._table.update(_assessment_columns(f, assessment)) \
                 .eq("fingerprint", f.fingerprint()).execute()
 
     @staticmethod
@@ -120,4 +123,17 @@ class SupabaseFindingsStore(FindingsStore):
             "details": _scrub_details(finding.details),
             "transaction_refs": list(finding.transactions),
             "ai_assessment": finding.ai_assessment or None,
+            "false_positive_probability": finding.false_positive_probability,
+            "recommended_action": finding.recommended_action or None,
+            "ai_judge": finding.ai_judge or None,
         }
+
+
+def _assessment_columns(finding: Finding, assessment: str) -> dict:
+    """The Tier 3 payload persist_assessments writes — never a human field."""
+    return {
+        "ai_assessment": assessment,
+        "false_positive_probability": finding.false_positive_probability,
+        "recommended_action": finding.recommended_action or None,
+        "ai_judge": finding.ai_judge or None,
+    }

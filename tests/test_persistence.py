@@ -140,10 +140,16 @@ def test_supabase_persist_assessments_updates_never_inserts():
     f.ai_assessment = "duplicate of last week's payment"
     blank = Finding("T1-02", Severity.HIGH, ["alpha"], "?", transactions=["TX-2"])  # no assessment
 
+    f.false_positive_probability = 0.8
+    f.recommended_action = "clear"
+    f.ai_judge = "model"
     store.persist_assessments([f, blank])
     assert store._table.upserts == []                                # never inserts
     assert store._table.updates == [
-        ("fingerprint", f.fingerprint(), {"ai_assessment": "duplicate of last week's payment"})]
+        ("fingerprint", f.fingerprint(),
+         {"ai_assessment": "duplicate of last week's payment",
+          "false_positive_probability": 0.8, "recommended_action": "clear",
+          "ai_judge": "model"})]
 
 
 # ---------------------------------------------------------------- disposition memory
@@ -179,22 +185,73 @@ def test_open_prior_is_not_suppressed(ctx, registry, findings):
     assert dup.fingerprint() in {f.fingerprint() for f in kept}
 
 
-def test_recurrence_after_clear_escalates(ctx, registry, findings):
-    off = find(findings, "T1-07")           # MEDIUM off-cycle payment, vendor present
-    assert off.severity == Severity.MEDIUM
-    vendor = off.details["vendor"]
-    # A *different* finding (other fingerprint) of the same vendor pattern was cleared.
-    prior = InMemoryFindingsStore([{
-        "fingerprint": "previously-cleared-fp", "rule_id": "T1-07",
-        "entity_ids": ["alpha"], "disposition": "error_corrected",
-        "details": {"vendor": vendor},
+def _cleared_prior(rule_id, details, note=None, entity_ids=("alpha",)):
+    return InMemoryFindingsStore([{
+        "fingerprint": "previously-cleared-fp", "rule_id": rule_id,
+        "entity_ids": list(entity_ids), "disposition": "error_corrected",
+        "details": details, "disposition_note": note,
     }]).load_prior()
 
-    kept, suppressed = apply_disposition_memory(findings, prior, entities_map(registry))
-    escalated = find(kept, "T1-07")
-    assert escalated.severity == Severity.HIGH      # MEDIUM → HIGH
-    assert "Recurs after a prior clear" in escalated.details["recurrence"]
-    assert escalated not in suppressed
+
+def test_fraud_pattern_recurrence_escalates(registry):
+    # A *different* finding (other fingerprint) of the same vendor pattern was
+    # cleared before. For a fraud-pattern rule (T1-04) that's the ramp signal.
+    f = Finding("T1-04", Severity.HIGH, ["alpha"], "?",
+                details={"vendor": "Acme Lumber"}, transactions=["TX-N1"])
+    kept, suppressed = apply_disposition_memory(
+        [f], _cleared_prior("T1-04", {"vendor": "Acme Lumber"}), entities_map(registry))
+    assert suppressed == []
+    assert kept[0].severity == Severity.CRITICAL     # HIGH → CRITICAL
+    assert "Recurs after a prior clear" in kept[0].details["recurrence"]
+
+
+def test_cadence_rule_recurrence_is_suppressed_with_prior_reason(registry):
+    # Clearing a recurring operational pattern must TEACH the system: the next
+    # instance is suppressed (audit-trailed), carrying the human's reason —
+    # never escalated.
+    f = Finding("T1-07", Severity.MEDIUM, ["alpha"], "?",
+                details={"vendor": "Acme Lumber"}, transactions=["TX-N2"])
+    prior = _cleared_prior("T1-07", {"vendor": "Acme Lumber"},
+                           note="always pays COD on delivery day")
+    kept, suppressed = apply_disposition_memory([f], prior, entities_map(registry))
+    assert kept == []
+    assert len(suppressed) == 1
+    assert "always pays COD" in suppressed[0].details["disposition_memory"]
+
+
+def test_critical_recurrence_is_never_auto_suppressed(registry):
+    # T4-09 is a suppress-policy rule, but a CRITICAL is never auto-dropped —
+    # it stays in the queue, annotated with the prior reason.
+    f = Finding("T4-09", Severity.CRITICAL, ["alpha"], "?",
+                details={"description": "ONLINE XFER 0821", "bank_ref": "x|1"})
+    prior = _cleared_prior("T4-09", {"description": "ONLINE XFER 0714"},
+                           note="monthly sweep to savings")
+    kept, suppressed = apply_disposition_memory([f], prior, entities_map(registry))
+    assert suppressed == []
+    assert kept[0].severity == Severity.CRITICAL
+    assert "monthly sweep" in kept[0].details["prior_clear"]
+
+
+def test_bank_description_pattern_matches_across_digits(registry):
+    # 'SERVICE FEE 0632' vs 'SERVICE FEE 0715' is one recurring pattern: digits
+    # (dates, trace numbers) are collapsed before comparing.
+    f = Finding("T4-09", Severity.INFO, ["alpha"], "?",
+                details={"description": "SERVICE FEE 0632", "bank_ref": "x|2"})
+    prior = _cleared_prior("T4-09", {"description": "SERVICE FEE 0715"},
+                           note="bank charges this monthly")
+    kept, suppressed = apply_disposition_memory([f], prior, entities_map(registry))
+    assert kept == [] and len(suppressed) == 1
+
+
+def test_unlisted_rule_recurrence_passes_through_annotated(registry):
+    f = Finding("T1-23", Severity.HIGH, ["alpha"], "?",
+                details={"vendor": "Acme Lumber"}, transactions=["TX-N3"])
+    kept, suppressed = apply_disposition_memory(
+        [f], _cleared_prior("T1-23", {"vendor": "Acme Lumber"}), entities_map(registry))
+    assert suppressed == []
+    assert kept[0].severity == Severity.HIGH         # unchanged
+    assert "previously cleared" in kept[0].details["prior_clear"]
+    assert "recurrence" not in kept[0].details
 
 
 def test_vendorless_clear_does_not_escalate_unrelated(ctx, registry, findings):
@@ -233,3 +290,26 @@ def test_workbook_lists_suppressed_findings(ctx, registry, tmp_path, findings):
     assert "Dispositioned" in wb.sheetnames
     rule_ids = [row[0].value for row in wb["Dispositioned"].iter_rows(min_row=2)]
     assert "T1-01" in rule_ids
+
+
+def test_workbook_rule_precision_sheet_from_history(registry, tmp_path):
+    import pandas as pd
+    prior = pd.DataFrame([
+        {"rule_id": "T1-01", "disposition": "legit"},
+        {"rule_id": "T1-01", "disposition": "error_corrected"},
+        {"rule_id": "T1-01", "disposition": "open"},
+        {"rule_id": "T4-09", "disposition": "legit"},
+        {"rule_id": "T4-09", "disposition": "legit"},
+    ])
+    path = write_workbook([], registry, tmp_path / "exc.xlsx", prior=prior)
+    wb = load_workbook(path)
+    assert "Rule Precision" in wb.sheetnames
+    rows = {r[0].value: [c.value for c in r]
+            for r in wb["Rule Precision"].iter_rows(min_row=2)}
+    # T1-01: 1 open, 1 legit, 1 error_corrected → real-issue rate 50%
+    assert rows["T1-01"][1:] == [1, 1, 1, 0, "50%"]
+    # T4-09: 2 legit, nothing real → 0%
+    assert rows["T4-09"][1:] == [0, 2, 0, 0, "0%"]
+    # no history → no sheet
+    plain = write_workbook([], registry, tmp_path / "plain.xlsx")
+    assert "Rule Precision" not in load_workbook(plain).sheetnames

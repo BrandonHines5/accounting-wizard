@@ -24,10 +24,16 @@ const sevRank = (s) => SEV_RANK[s] ?? 99;
 // rest render a flat list in the chosen order.
 const SORTS = [
   { value: "severity", label: "Criticality (high→low)" },
+  { value: "fp_desc", label: "AI: likely false-positive first" },
   { value: "date_desc", label: "Newest first" },
   { value: "date_asc", label: "Oldest first" },
   { value: "type", label: "Type (rule)" },
 ];
+
+// Tier 3 triage labels for the recommended-action filter and card line.
+const ACTION_LABEL = { clear: "Clear", verify: "Verify", escalate: "Escalate" };
+const fpProb = (f) =>
+  typeof f?.false_positive_probability === "number" ? f.false_positive_probability : null;
 
 // The date the UI sorts/filters/shows is the finding's TRANSACTION date — the date
 // of the underlying financial activity — surfaced by list_findings() as `txn_date`,
@@ -131,8 +137,12 @@ function Dashboard({ supabase, session }) {
   const [sortBy, setSortBy] = useState("severity");
   const [sevFilter, setSevFilter] = useState("ALL");
   const [typeFilter, setTypeFilter] = useState("ALL");
+  const [recFilter, setRecFilter] = useState("ALL");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+  // Multi-select for bulk disposition (fingerprints of not-yet-cleared cards).
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkNote, setBulkNote] = useState("");
   // Type legend drawer. Default open where it docks beside the content (wide
   // screens); remember the reviewer's choice across visits.
   const [legendOpen, setLegendOpen] = useState(() => {
@@ -155,6 +165,7 @@ function Dashboard({ supabase, session }) {
     const { data, error } = await supabase.rpc("list_findings");
     if (error) { setError(error.message); setFindings([]); }  // resolve the loading state on error
     else setFindings(data || []);
+    setSelected(new Set());   // a reload invalidates any in-flight selection
   }, [supabase]);
 
   useEffect(() => { load(); }, [load]);
@@ -213,6 +224,51 @@ function Dashboard({ supabase, session }) {
     if (reviewMsg) setReviewNote(reviewMsg);
   }
 
+  // Dispositions the visible selection in one action (allowlist-gated RPC,
+  // chunked to its 500-fingerprint limit). Selections hidden by a filter
+  // applied AFTER selecting are excluded — you only act on what you can see.
+  // The optional shared note feeds the same feedback re-review as a single
+  // disposition.
+  async function dispositionBulk(value, selectable) {
+    if (reviewing || selected.size === 0) return;
+    const visible = new Set(selectable.map((f) => f.fingerprint));
+    const fps = [...selected].filter((fp) => visible.has(fp));
+    if (fps.length === 0) return;
+    const trimmed = bulkNote.trim();
+    setReviewNote(null);
+    setFindings((prev) =>
+      prev.map((f) => (visible.has(f.fingerprint) && selected.has(f.fingerprint)
+        ? { ...f, _busy: true } : f)));
+    for (let start = 0; start < fps.length; start += 500) {
+      const { error } = await supabase.rpc("set_findings_disposition_bulk", {
+        p_fingerprints: fps.slice(start, start + 500),
+        p_disposition: value, p_note: trimmed || null,
+      });
+      if (error) { await load(); setError(error.message); return; }
+    }
+    setBulkNote("");
+    let reviewMsg = null;
+    if (trimmed) {
+      setReviewing(true);
+      try {
+        const { error: e } = await supabase.functions.invoke("feedback-review", { body: {} });
+        if (e) reviewMsg = e.message || String(e);
+      } catch (e) { reviewMsg = e?.message || String(e); }
+      setReviewing(false);
+    }
+    await load();
+    if (reviewMsg) setReviewNote(reviewMsg);
+  }
+
+  function toggleSelected(fp) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(fp)) next.delete(fp);
+      else next.add(fp);
+      return next;
+    });
+  }
+
   // "Cleared" = closed (legit / error_corrected). Escalated is NOT cleared — it
   // stays active and visible, because escalating means it needs MORE attention.
   const isCleared = (f) => f.disposition === "legit" || f.disposition === "error_corrected";
@@ -233,10 +289,15 @@ function Dashboard({ supabase, session }) {
     return m;
   }, {});
 
+  const recOptions = ["clear", "verify", "escalate"].filter((a) =>
+    (findings || []).some((f) => f.recommended_action === a));
+
   const filtersActive =
-    sevFilter !== "ALL" || typeFilter !== "ALL" || !!fromDate || !!toDate;
+    sevFilter !== "ALL" || typeFilter !== "ALL" || recFilter !== "ALL"
+    || !!fromDate || !!toDate;
   const clearFilters = () => {
-    setSevFilter("ALL"); setTypeFilter("ALL"); setFromDate(""); setToDate("");
+    setSevFilter("ALL"); setTypeFilter("ALL"); setRecFilter("ALL");
+    setFromDate(""); setToDate("");
   };
 
   // Filter → sort pipeline. The "show cleared" toggle gates first (its result is
@@ -246,6 +307,7 @@ function Dashboard({ supabase, session }) {
   const filtered = gated.filter((f) => {
     if (sevFilter !== "ALL" && f.severity !== sevFilter) return false;
     if (typeFilter !== "ALL" && f.rule_id !== typeFilter) return false;
+    if (recFilter !== "ALL" && f.recommended_action !== recFilter) return false;
     if (fromDate || toDate) {
       const k = dayKeyOf(f);
       if (!k) return false;                 // no transaction date → outside any window
@@ -260,6 +322,11 @@ function Dashboard({ supabase, session }) {
   // mounted (and in-progress note text intact) across sort changes.
   const sorted = [...filtered].sort((a, b) => {
     switch (sortBy) {
+      case "fp_desc":
+        // Highest AI false-positive probability first (fast bulk-clearing);
+        // unassessed findings sort last.
+        return (fpProb(b) ?? -1) - (fpProb(a) ?? -1)
+          || sevRank(a.severity) - sevRank(b.severity);
       case "date_desc": return dateCompare(a, b, true);
       case "date_asc": return dateCompare(a, b, false);
       case "type":
@@ -345,6 +412,17 @@ function Dashboard({ supabase, session }) {
                 {typeOptions.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </label>
+            {recOptions.length > 0 && (
+              <label className="ctl">
+                <span title="Tier 3's recommended next step">AI recommends</span>
+                <select value={recFilter} onChange={(e) => setRecFilter(e.target.value)}>
+                  <option value="ALL">All</option>
+                  {recOptions.map((a) => (
+                    <option key={a} value={a}>{ACTION_LABEL[a]}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="ctl">
               <span title="Filters on the transaction date">Txn from</span>
               <input type="date" value={fromDate} max={toDate || undefined}
@@ -363,6 +441,43 @@ function Dashboard({ supabase, session }) {
             )}
           </div>
 
+          {(() => {
+            const selectable = sorted.filter((f) => !isCleared(f));
+            const allShownSelected = selectable.length > 0
+              && selectable.every((f) => selected.has(f.fingerprint));
+            return selectable.length > 0 && (
+              <div className="bulkbar">
+                <label className="row muted" style={{ fontSize: 13 }}>
+                  <input type="checkbox" checked={allShownSelected}
+                    onChange={(e) => setSelected(e.target.checked
+                      ? new Set(selectable.map((f) => f.fingerprint))
+                      : new Set())} />
+                  select all shown ({selectable.length})
+                </label>
+                {selected.size > 0 && (
+                  <>
+                    <span className="muted" style={{ fontSize: 13 }}>
+                      {selected.size} selected
+                    </span>
+                    <input className="bulk-note" type="text" value={bulkNote}
+                      disabled={reviewing}
+                      onChange={(e) => setBulkNote(e.target.value)}
+                      placeholder="Shared reason (optional)" />
+                    {DISPOSITIONS.map((d) => (
+                      <button key={d.value} disabled={reviewing}
+                        onClick={() => dispositionBulk(d.value, selectable)}>
+                        {d.label} all
+                      </button>
+                    ))}
+                    <button className="link" onClick={() => setSelected(new Set())}>
+                      Clear selection
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })()}
+
           {sorted.length === 0 && (
             <div className="card muted">
               {filtersActive ? (
@@ -379,7 +494,8 @@ function Dashboard({ supabase, session }) {
           <section>
             {sorted.map((f) => (
               <FindingCard key={f.fingerprint} f={f} onDisposition={disposition}
-                locked={reviewing} />
+                locked={reviewing} selected={selected.has(f.fingerprint)}
+                onToggleSelect={toggleSelected} />
             ))}
           </section>
 
@@ -432,7 +548,7 @@ function Dashboard({ supabase, session }) {
   );
 }
 
-function FindingCard({ f, onDisposition, locked }) {
+function FindingCard({ f, onDisposition, locked, selected, onToggleSelect }) {
   const [note, setNote] = useState("");
   // Clear the reason whenever this finding leaves the open state, so reopening it
   // (or reusing the fingerprint) never resurfaces stale text on the next action.
@@ -445,9 +561,15 @@ function FindingCard({ f, onDisposition, locked }) {
   // stays active: full opacity, still actionable, just badged as escalated.
   const cleared = f.disposition === "legit" || f.disposition === "error_corrected";
   const when = fmtDay(dayKeyOf(f));
+  const prob = fpProb(f);
   return (
     <div className={`card ${cleared ? "resolved" : ""}`}>
       <div className="row">
+        {!cleared && (
+          <input type="checkbox" className="pick" checked={!!selected}
+            aria-label="Select for bulk disposition"
+            onChange={() => onToggleSelect(f.fingerprint)} />
+        )}
         <span className={`badge sev-${f.severity}`}>{f.severity}</span>
         <span className="rule" title={RULE_INFO[f.rule_id]?.label || undefined}>{f.rule_id}</span>
         <span className="muted" style={{ fontSize: 12 }}>{(f.entity_ids || []).join(", ")}</span>
@@ -474,6 +596,15 @@ function FindingCard({ f, onDisposition, locked }) {
         <div className="meta">txns: {f.transaction_refs.join(", ")}</div>
       )}
       {f.ai_assessment && <div className="ai">{f.ai_assessment}</div>}
+      {(prob !== null || f.recommended_action) && (
+        <div className="suggest">
+          {prob !== null && <>AI: <b>{Math.round(prob * 100)}%</b> likely false positive</>}
+          {prob !== null && f.recommended_action && " · "}
+          {f.recommended_action && (
+            <>recommends <b>{ACTION_LABEL[f.recommended_action] || f.recommended_action}</b></>
+          )}
+        </div>
+      )}
       {f.disposition === "open" && f.suggested_disposition && (
         <div className="suggest">
           AI suggests: <b>{DISP_LABEL[f.suggested_disposition] || f.suggested_disposition}</b>
