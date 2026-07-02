@@ -33,10 +33,17 @@ class Tier3Assessment:
     innocent_explanation: str = ""           # specific benign explanation, if FP likely
     recommended_action: str = "verify"       # clear | verify | escalate
     recommended_action_detail: str = ""
+    failed: bool = False                     # judge errored — provisional stand-in only
 
 
 class Judge:
-    """Base class. Subclasses implement `assess(packet) -> Tier3Assessment`."""
+    """Base class. Subclasses implement `assess(packet) -> Tier3Assessment`.
+
+    `kind` is the assessment's provenance, persisted per finding: "model" reviews
+    are final (reused on later runs), "heuristic" ones are provisional — a later
+    run with a model judge re-reviews them instead of carrying them forever."""
+
+    kind = "model"
 
     def assess(self, packet: JudgmentPacket) -> Tier3Assessment:  # pragma: no cover
         """Review one finding's packet and return an assessment."""
@@ -66,6 +73,7 @@ def _failed_assessment(packet: JudgmentPacket, exc: Exception) -> Tier3Assessmen
         false_positive_probability=0.0,
         recommended_action="escalate" if sev >= Severity.HIGH else "verify",
         recommended_action_detail="Automated assessment failed — review manually.",
+        failed=True,                         # provisional — re-reviewed next run
     )
 
 
@@ -77,7 +85,11 @@ class HeuristicJudge(Judge):
     false-positive prior from context (recurring/known-vendor patterns read as
     more likely benign), and maps severity to a recommended action. It is
     intentionally conservative: it adds triage structure without inventing
-    judgment the deterministic rules don't support."""
+    judgment the deterministic rules don't support. Its assessments persist as
+    PROVISIONAL (`kind = "heuristic"`): a later run with a model judge re-reviews
+    them rather than treating them as done."""
+
+    kind = "heuristic"
 
     def assess(self, packet: JudgmentPacket) -> Tier3Assessment:
         """Confirm severity and derive a coarse false-positive prior from context."""
@@ -179,5 +191,8 @@ def apply_tier3(
     assessments = judge.assess_all(packets)
     for finding, assessment in zip(findings, assessments):
         apply_assessment(finding, assessment, entities_by_id)
+        # Provenance: failed assessments are provisional regardless of the judge,
+        # so a model run later supersedes them instead of them counting as done.
+        finding.ai_judge = "heuristic" if assessment.failed else judge.kind
     findings.sort(key=lambda f: (-int(f.severity), f.rule_id))
     return findings
