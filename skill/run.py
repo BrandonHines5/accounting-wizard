@@ -8,7 +8,7 @@ Tier 3 review, persistence, and workbook as every other finding.
 
 Usage:
     python -m skill.run [--data-dir data] [--output output/exceptions.xlsx]
-                        [--entity <id> ...] [--tier3 auto|on|off|heuristic]
+                        [--entity <id> ...] [--tier3 auto|on|batch|off|heuristic]
                         [--store none|supabase]
                         [--bank-dir <dir>] [--bank-accounts config/bank_accounts.yaml]
 """
@@ -123,7 +123,9 @@ def _make_judge(mode: str, model: str | None):
     """Resolve --tier3 mode to a judge, or None to skip Tier 3.
 
     auto: Claude judge if ANTHROPIC_API_KEY is set, else skip (no degraded run).
-    on: Claude judge, required.  heuristic: deterministic offline judge.  off: skip.
+    on: Claude judge, required.  batch: Claude via the Message Batches API (half
+    cost, built for large backlogs), required.  heuristic: deterministic offline
+    judge.  off: skip.
     """
     if mode == "off":
         return None
@@ -132,16 +134,17 @@ def _make_judge(mode: str, model: str | None):
     if mode == "auto" and not os.environ.get("ANTHROPIC_API_KEY"):
         print("  Tier 3 skipped (no ANTHROPIC_API_KEY; use --tier3 heuristic for offline triage).")
         return None
-    from tier3.anthropic_judge import MODEL, AnthropicJudge
-    judge = AnthropicJudge(model=model or MODEL)
-    if mode == "on":
+    from tier3.anthropic_judge import MODEL, AnthropicBatchJudge, AnthropicJudge
+    cls = AnthropicBatchJudge if mode == "batch" else AnthropicJudge
+    judge = cls(model=model or MODEL)
+    if mode in ("on", "batch"):
         # Fail fast at startup rather than deep into the run: force the client so
         # a missing SDK or unresolved credentials errors before ingest/rules.
         try:
             _ = judge.client
         except Exception as exc:  # noqa: BLE001 — surface a clear startup error
             raise SystemExit(
-                f"--tier3 on requires the Anthropic SDK and credentials: {exc}") from exc
+                f"--tier3 {mode} requires the Anthropic SDK and credentials: {exc}") from exc
     return judge
 
 
@@ -348,10 +351,12 @@ def main() -> None:
                              "Weekly runs should scope to the recent window.")
     parser.add_argument("--until", default=None,
                         help="Only analyze transactions on/before this date (YYYY-MM-DD)")
-    parser.add_argument("--tier3", choices=["auto", "on", "off", "heuristic"],
+    parser.add_argument("--tier3", choices=["auto", "on", "batch", "off", "heuristic"],
                         default="auto",
                         help="AI judgment layer: auto (Claude if ANTHROPIC_API_KEY set, "
-                             "else skip), on (require Claude), heuristic (offline), off.")
+                             "else skip), on (require Claude, one call per finding), "
+                             "batch (require Claude via the Message Batches API — half "
+                             "cost, made for large backlogs), heuristic (offline), off.")
     parser.add_argument("--tier3-model", default=None,
                         help="Override the Claude model id for Tier 3.")
     parser.add_argument("--store", choices=["none", "supabase"], default="none",
@@ -465,10 +470,13 @@ def main() -> None:
     reviewed: list = []
     if judge is not None and findings:
         # Incremental: reuse the stored assessment for findings already reviewed in a
-        # prior run; only send genuinely new ones to the model, capped per run so a
-        # large first-time backlog still finishes inside the job's time limit (the
-        # remainder is reviewed on later runs once these persist).
-        to_review, carried, deferred = select_for_review(findings, prior, _tier3_cap())
+        # prior run; only send genuinely new ones to the model — plus, when this run
+        # HAS a model judge, ones whose stored assessment was only a provisional
+        # heuristic stub — capped per run so a large first-time backlog still finishes
+        # inside the job's time limit (the remainder is reviewed on later runs once
+        # these persist).
+        to_review, carried, deferred = select_for_review(
+            findings, prior, _tier3_cap(), judge_kind=judge.kind)
         if to_review:
             note = f"{len(carried)} carried forward" if carried else ""
             if deferred:
@@ -500,7 +508,8 @@ def main() -> None:
 
     output = args.output or str(
         REPO_ROOT / "output" / f"exceptions_{datetime.now():%Y%m%d_%H%M}.xlsx")
-    path = write_workbook(findings, registry, output, suppressed=suppressed)
+    path = write_workbook(findings, registry, output, suppressed=suppressed,
+                          prior=prior)
     print(f"Workbook written: {path}")
 
 
