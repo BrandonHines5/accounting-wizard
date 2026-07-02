@@ -125,14 +125,20 @@ def duplicate_payment_fuzzy(ctx: RunContext):
                     )
 
 
-@rule("T1-04", "Threshold splitting", requires="QB + approval threshold config")
+@rule("T1-04", "Threshold splitting", requires="QB + approval threshold config",
+      notes="Only payments at or above threshold_split_min_fraction of the approval "
+            "threshold count toward a split: someone dodging a $5k approval writes "
+            "$3–4.9k checks, not $200 ones — and ordinary weekly supplier runs are "
+            "many small payments, which is cadence, not splitting.")
 def threshold_splitting(ctx: RunContext):
     window = int(ctx.config.param("threshold_split_window_days"))
+    min_fraction = float(ctx.config.param("threshold_split_min_fraction"))
     for entity in ctx.registry.active():
         threshold = ctx.config.approval_threshold(entity)
         pay = _payments(ctx, entity.id, AP_TYPES).sort_values("date")
         for vendor, grp in pay.groupby("vendor_name"):
-            below = grp[grp["amount"] < threshold]
+            below = grp[(grp["amount"] < threshold)
+                        & (grp["amount"] >= threshold * min_fraction)]
             if len(below) < 2:
                 continue
             rows = below.to_dict("records")
@@ -220,17 +226,21 @@ def manual_check_on_ap_vendor(ctx: RunContext):
 
 
 @rule("T1-09", "Payment without a matching invoice",
-      requires="QB Vendor Transaction Detail (bills + bill payments)",
+      requires="QB Vendor Transaction Detail (bills + bill payments + credit memos)",
       notes="Amount-based reconciliation: QB exports don't link a payment to the "
             "bill(s) it pays (a payment row's Num is its check no., not the invoice), "
             "so each payment is matched to one bill or a sum of bills by amount, per "
-            "vendor. Progress/partial payments (below an outstanding invoice) are not "
-            "flagged. Strengthened by Adaptive approval data once ingested (T1-03).")
+            "vendor. Credit memos reduce the vendor's outstanding balance, and a "
+            "payment within the outstanding balance is treated as on-account, not "
+            "flagged. Unmatched payments aggregate to ONE finding per vendor. "
+            "Strengthened by Adaptive approval data once ingested (T1-03).")
 def payment_without_matching_invoice(ctx: RunContext):
     """For each invoice/AP vendor (one with at least one bill), every payment should
-    tie to a bill — or, for a batch check, to a SUM of bills. Flag payments that match
-    no single invoice and no combination of invoices and exceed the vendor's
-    outstanding invoices (unsupported payment, overpayment, or double-pay)."""
+    tie to a bill, a SUM of bills (batch check), or fit within the vendor's
+    outstanding balance net of credit memos (on-account / progress payment). Only
+    payments EXCEEDING what's outstanding are exceptions (unsupported payment,
+    overpayment, or double-pay), and they aggregate into one per-vendor finding —
+    one review, not one per check."""
     tol = float(ctx.config.param("invoice_match_amount_tolerance"))
     lookback = int(ctx.config.param("invoice_match_lookback_days"))
     max_combo = int(ctx.config.param("invoice_match_max_combo"))
@@ -250,8 +260,13 @@ def payment_without_matching_invoice(ctx: RunContext):
                  "used": False}
                 for _, r in bills.iterrows() if abs(float(r["amount"])) > 0
             ]
+            credit_rows = grp[(grp["txn_type"] == "credit_memo") & grp["amount"].notna()
+                              & grp["date"].notna()]
+            credits = [{"cents": round(abs(float(r["amount"])) * 100), "date": r["date"]}
+                       for _, r in credit_rows.iterrows() if abs(float(r["amount"])) > 0]
             pays = grp[grp["txn_type"].isin(AP_TYPES) & grp["amount"].notna()
                        & grp["date"].notna()].sort_values("date")
+            unmatched: list = []
             for _, p in pays.iterrows():
                 pc = round(abs(float(p["amount"])) * 100)
                 if pc <= 0:
@@ -280,23 +295,42 @@ def payment_without_matching_invoice(ctx: RunContext):
                     for b in matched:
                         b["used"] = True
                     continue
-                # 3) plausibly a partial/progress payment of an outstanding invoice
-                if any(b["cents"] >= pc - tol_c for b in cands):
+                # 3) within the outstanding balance (bills minus credit memos in the
+                # window) → on-account / progress / net-of-credit payment. Consume
+                # oldest bills up to the payment so the balance rolls forward.
+                credit_c = sum(c["cents"] for c in credits
+                               if -5 <= (p["date"] - c["date"]).days <= lookback)
+                outstanding = sum(b["cents"] for b in cands) - credit_c
+                if pc <= outstanding + tol_c:
+                    covered = 0
+                    for b in sorted(cands, key=lambda b: b["date"]):
+                        if covered >= pc:
+                            break
+                        b["used"] = True
+                        covered += b["cents"]
                     continue
-                # 4) ties to no invoice and exceeds outstanding invoices
+                # 4) ties to no invoice and exceeds outstanding → exception
+                unmatched.append(p)
+            if unmatched:
+                total = sum(abs(float(p["amount"])) for p in unmatched)
+                listed = "; ".join(f"${abs(float(p['amount'])):,.2f} on {p['date'].date()}"
+                                   for p in unmatched[:8])
+                if len(unmatched) > 8:
+                    listed += f"; … +{len(unmatched) - 8} more"
+                plural = "s" if len(unmatched) > 1 else ""
                 yield Finding(
                     rule_id="T1-09",
                     severity=Severity.MEDIUM,
                     entity_ids=[entity_id],
                     question=(
-                        f"Payment of ${abs(float(p['amount'])):,.2f} to {vendor} on "
-                        f"{p['date'].date()} doesn't match any invoice or combination of "
-                        f"invoices on file, and exceeds {vendor}'s outstanding invoices. "
-                        "Which bill does it pay?"
+                        f"{len(unmatched)} payment{plural} to {vendor} totaling "
+                        f"${total:,.2f} ({listed}) match no invoice or combination of "
+                        f"invoices on file and exceed {vendor}'s outstanding balance. "
+                        f"Which bills do they pay?"
                     ),
-                    details={"vendor": vendor, "amount": abs(float(p["amount"])),
-                             "check_no": p["check_no"]},
-                    transactions=[str(p["source_id"])],
+                    details={"vendor": vendor, "total": round(total, 2),
+                             "payments": len(unmatched)},
+                    transactions=[str(p["source_id"]) for p in unmatched],
                 )
 
 
