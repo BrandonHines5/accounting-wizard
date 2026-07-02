@@ -2,9 +2,13 @@
 # false-positive log — do not change rule logic to tune, change thresholds.
 
 defaults:
-  # T1-04: payments below this each, summing above it, within window_days
+  # T1-04: payments below this each, summing above it, within window_days.
+  # min_fraction: only payments at/above this fraction of the threshold count as
+  # potential split pieces — a builder's weekly supplier run is many small
+  # payments (cadence), whereas threshold-dodging uses near-threshold checks.
   approval_threshold: 5000
   threshold_split_window_days: 7
+  threshold_split_min_fraction: 0.5
 
   # T1-02: fuzzy duplicate tolerances. The window is the max gap between two
   # same-vendor, near-equal payments still treated as a possible duplicate. Kept
@@ -59,6 +63,14 @@ defaults:
   bank_amount_tolerance: 0.01      # cleared vs recorded amount must agree within this
   bank_date_tolerance_days: 5      # non-check match: bank date vs book date window
   clearing_gap_days: 30            # recorded→cleared gap beyond this is flagged
+  check_match_max_days: 180        # a check-number match must clear within this many
+                                   # days of the recorded date — numbers recycle over
+                                   # an account's life, and an undated match pairs a
+                                   # years-old cleared check with today's book entry
+                                   # (false CRITICAL "alteration")
+  bank_min_critical_amount: 50     # unmatched bank lines below this are INFO, not
+                                   # CRITICAL/MEDIUM — a $3 unexplained debit is a
+                                   # question, not an incident
 
   # Tier 4 check-image vision reads (T4-03/04/05)
   check_image_min_confidence: 90   # read confidence (0–100) below this → human review queue
@@ -69,6 +81,9 @@ defaults:
   round_number_ratio: 0.6          # T2-02: flag when at least this fraction are round
   benford_min_count: 40            # T2-02: min sample to test first-digit distribution
   benford_chi2_critical: 20.09     # T2-02: chi-square df=8 critical value (~p<0.01)
+  payment_timing_weekly: false     # T2-10: off in weekly runs (quarterly trend review —
+                                   # per-job construction vendors have irregular cadence,
+                                   # so weekly INFO flags are queue noise)
   payment_timing_min_payments: 6   # T2-10: min payments to assess a vendor's cadence
   payment_timing_mad_z: 3.5        # T2-10: robust (MAD) modified z-score outlier threshold
   concentration_shift_threshold: 0.25  # T2-05: share rise (fraction) vs baseline to flag

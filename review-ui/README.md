@@ -20,6 +20,14 @@ the Supabase URL + anon key are baked in as public-by-design defaults.)
   `set_finding_disposition(fingerprint, disposition, note)` — which run as
   `SECURITY DEFINER`. Setting a disposition feeds the run-over-run learning loop.
 
+## Triage + bulk review
+Each card shows the Tier 3 triage — the AI's false-positive probability and its
+recommended next step (clear / verify / escalate) — persisted by the weekly run.
+Sort by **AI: likely false-positive first** or filter **AI recommends: Clear**,
+then use the checkboxes + the bulk bar to disposition a whole selection in one
+call (`set_findings_disposition_bulk`, same allowlist gating and note redaction
+as the single-card path).
+
 ## Feedback that teaches the tool
 Each open finding has a **reason box**. When you disposition it (Legit / Error
 corrected / Escalate) with a note, two things happen:

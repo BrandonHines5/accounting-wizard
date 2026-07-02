@@ -93,10 +93,11 @@ class AnthropicJudge(Judge):
             self._client = anthropic.Anthropic()
         return self._client
 
-    def assess(self, packet: JudgmentPacket) -> Tier3Assessment:
-        """Send the packet to Claude and parse the structured assessment back."""
+    def _request_params(self, packet: JudgmentPacket) -> dict:
+        """The messages.create kwargs for one packet — shared verbatim with the
+        Batches API (whose per-request `params` take the same shape)."""
         payload = json.dumps(packet.to_prompt_dict(), default=str, indent=2)
-        response = self.client.messages.create(
+        return dict(
             model=self.model,
             max_tokens=self.max_tokens,
             thinking={"type": "adaptive"},
@@ -107,6 +108,10 @@ class AnthropicJudge(Judge):
             messages=[{"role": "user",
                        "content": f"Review this finding:\n{payload}"}],
         )
+
+    def assess(self, packet: JudgmentPacket) -> Tier3Assessment:
+        """Send the packet to Claude and parse the structured assessment back."""
+        response = self.client.messages.create(**self._request_params(packet))
         return _parse(response, fallback=packet.finding.severity)
 
     def assess_all(self, packets: list[JudgmentPacket]) -> list[Tier3Assessment]:
@@ -153,6 +158,65 @@ class AnthropicJudge(Judge):
         return [r if r is not None
                 else _failed_assessment(p, RuntimeError("Tier 3 produced no assessment"))
                 for p, r in zip(packets, results, strict=True)]
+
+
+class AnthropicBatchJudge(AnthropicJudge):
+    """Tier 3 judge using the Message Batches API — 50% of the synchronous cost
+    and no per-call wall-clock pressure, so a large backlog (a first full run, or
+    the one-time re-review of heuristic-stubbed findings) can be assessed in ONE
+    run instead of trickling through the per-run cap for weeks.
+
+    One batch per assess_all call; polled until it ends or `timeout_seconds`
+    passes. Findings whose result isn't back in time degrade to the conservative
+    fallback assessment — which persists as PROVISIONAL, so the next run simply
+    re-reviews them. Nothing is ever lost to a timeout."""
+
+    def __init__(self, client=None, model: str = MODEL, max_tokens: int = 1500,
+                 poll_seconds: float = 20.0, timeout_seconds: float | None = None):
+        super().__init__(client=client, model=model, max_tokens=max_tokens)
+        self.poll_seconds = poll_seconds
+        if timeout_seconds is None:
+            timeout_seconds = float(os.environ.get("TIER3_BATCH_TIMEOUT", "3600"))
+        self.timeout_seconds = timeout_seconds
+
+    def assess_all(self, packets: list[JudgmentPacket]) -> list[Tier3Assessment]:
+        import time
+
+        if len(packets) <= 1:
+            return super().assess_all(packets)   # not worth a batch round-trip
+        try:
+            batch = self.client.messages.batches.create(requests=[
+                {"custom_id": f"finding-{i}", "params": self._request_params(p)}
+                for i, p in enumerate(packets)
+            ])
+            deadline = time.monotonic() + self.timeout_seconds
+            while batch.processing_status != "ended":
+                if time.monotonic() >= deadline:
+                    try:
+                        self.client.messages.batches.cancel(batch.id)
+                    except Exception:  # noqa: BLE001 — best-effort cleanup
+                        pass
+                    break
+                time.sleep(self.poll_seconds)
+                batch = self.client.messages.batches.retrieve(batch.id)
+
+            results: dict[str, Tier3Assessment] = {}
+            if batch.processing_status == "ended":
+                for entry in self.client.messages.batches.results(batch.id):
+                    index = int(entry.custom_id.rsplit("-", 1)[1])
+                    if entry.result.type != "succeeded":
+                        continue   # errored/expired → per-packet fallback below
+                    try:
+                        results[entry.custom_id] = _parse(
+                            entry.result.message, fallback=packets[index].finding.severity)
+                    except Exception:  # noqa: BLE001 — malformed single result
+                        pass
+        except Exception as exc:  # noqa: BLE001 — batch API unavailable entirely
+            return [_failed_assessment(p, exc) for p in packets]
+
+        timeout_err = TimeoutError(f"batch not finished within {self.timeout_seconds:.0f}s")
+        return [results.get(f"finding-{i}") or _failed_assessment(p, timeout_err)
+                for i, p in enumerate(packets)]
 
 
 def _parse(response, fallback: Severity) -> Tier3Assessment:

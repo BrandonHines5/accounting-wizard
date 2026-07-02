@@ -36,6 +36,28 @@ def test_t1_04_threshold_splitting(findings):
     assert set(hits[0].transactions) == {"TX-005", "TX-006", "TX-007"}
 
 
+def test_t1_04_small_payment_cadence_is_not_splitting(registry, config):
+    # Many small payments in a week is a builder's ordinary supplier run, not a
+    # threshold dodge — only near-threshold pieces (≥ min_fraction) count.
+    import pandas as pd
+    from core.model import TRANSACTION_COLUMNS, VENDOR_COLUMNS, validate_transactions
+    from rules.billing import threshold_splitting
+    from rules.engine import RunContext
+    base = {c: None for c in TRANSACTION_COLUMNS}
+    rows = [{**base, "entity_id": "alpha", "source_system": "qb",
+             "source_id": f"SM-{i}", "vendor_name": "Weekly Supply Co",
+             "txn_type": "bill_payment", "date": f"2026-05-{4 + i:02d}",
+             "amount": 800.00 + i}                       # 6 × ~$800 in one week
+            for i in range(6)]
+    txns = validate_transactions(pd.DataFrame(rows, columns=TRANSACTION_COLUMNS),
+                                 {e.id for e in registry})
+    ctx = RunContext(transactions=txns, vendors=pd.DataFrame(columns=VENDOR_COLUMNS),
+                     registry=registry, config=config)
+    # ~$4.8k inside 7 days, near the $5k threshold in sum — but each piece is far
+    # below the near-threshold floor, so nothing fires.
+    assert list(threshold_splitting(ctx)) == []
+
+
 def test_t1_07_off_cycle_payment(findings):
     hits = by_rule(findings, "T1-07")
     assert len(hits) == 1

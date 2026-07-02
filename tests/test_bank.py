@@ -9,9 +9,10 @@ from bank.reconcile import reconcile, reconcile_all, reconcile_deposits
 def _books() -> pd.DataFrame:
     rows = [
         # source_id, txn_type, date, vendor, amount, check_no
+        ("TX-0", "check", "2026-04-03", "Early Vendor", 250.00, "1000"),  # clean match (early)
         ("TX-1", "check", "2026-05-05", "Acme Lumber", 500.00, "1001"),   # clean match
         ("TX-2", "check", "2026-05-08", "Smith Electric", 1200.00, "1002"),  # altered amount
-        ("TX-3", "check", "2026-05-15", "Roof Pros", 900.00, "1003"),     # book-only (outstanding)
+        ("TX-3", "check", "2026-04-10", "Roof Pros", 900.00, "1003"),     # book-only (stale-outstanding)
         ("TX-4", "check", "2026-04-01", "QuickPour", 400.00, "1004"),     # long clearing gap
         ("TX-5", "ach", "2026-05-16", "CloudCo", 1500.00, ""),            # non-check, matched
     ]
@@ -25,6 +26,7 @@ def _books() -> pd.DataFrame:
 def _bank(registry) -> pd.DataFrame:
     rows = [
         # amount (signed), date, description, check_no
+        (-250.00, "2026-04-05", "CHECK 1000", "1000"),     # clean match — extends the window
         (-500.00, "2026-05-07", "CHECK 1001", "1001"),     # clean match (gap 2)
         (-1300.00, "2026-05-10", "CHECK 1002", "1002"),    # T4-04 altered
         (-700.00, "2026-05-12", "CHECK 1009", "1009"),     # T4-02 unrecorded
@@ -140,7 +142,7 @@ def _deposit_bank(registry) -> pd.DataFrame:
         ("alpha",   2000.00, "2026-05-07", "MOBILE DEPOSIT"),  # matches DEP-1 (gap 2)
         ("alpha",    750.00, "2026-05-15", "DEPOSIT"),         # T4-07 unrecorded (MEDIUM)
         ("charity", 1000.00, "2026-05-08", "DONATION ACH"),    # matches DON-1 (gap 2)
-        ("charity",  900.00, "2026-05-20", "DEPOSIT"),         # T4-08 unrecorded (HIGH)
+        ("charity",  900.00, "2026-05-14", "DEPOSIT"),         # T4-08 unrecorded (HIGH)
     ]
     df = pd.DataFrame(rows, columns=["entity_id", "amount", "date", "description"])
     df["account_fingerprint"] = "acct-hash-2"
@@ -187,10 +189,14 @@ def test_unrecorded_deposits_have_distinct_fingerprints(deposit_findings):
 def test_reconcile_all_merges_both_sides(registry, config):
     disb = reconcile(_books(), _bank(registry), registry, config)
     combined = reconcile_all(_books(), _bank(registry), registry, config)
-    # _books() has no deposit rows, but _bank() carries a +5000 alpha inflow →
-    # exactly one T4-07 unrecorded deposit on top of the disbursement findings.
+    # _books() has no deposit rows, so the deposit side is SKIPPED (nothing to
+    # match against) and the +5000 alpha inflow rolls up into exactly one INFO
+    # ingest-gap note instead of a per-line unexplained-inflow finding.
     assert len(combined) == len(disb) + 1
-    assert sum(f.rule_id == "T4-07" for f in combined) == 1
+    note = [f for f in combined if f.rule_id == "T4-07"]
+    assert len(note) == 1 and str(note[0].severity) == "INFO"
+    assert note[0].details["stat_key"] == "no_receipts_ingested"
+    assert note[0].details["bank_deposits"] == 1
     sev = [int(f.severity) for f in combined]
     assert sev == sorted(sev, reverse=True)   # severity-sorted
 
@@ -250,6 +256,86 @@ def test_batch_leaves_real_missing_and_unrecorded(registry, config):
     unrecorded = [f for f in findings if not f.transactions]
     assert unrecorded and str(unrecorded[0].severity) == "MEDIUM"
     assert unrecorded[0].details["amount"] == 55.0
+
+
+def test_bank_lines_before_books_coverage_roll_up_to_one_info(registry, config):
+    # A statement backfill reaching years before the earliest book transaction
+    # must NOT flood the queue with CRITICALs — those lines roll up into ONE
+    # INFO coverage note (T4-01) per entity/side.
+    old = pd.DataFrame(
+        [(-900.00, "2023-03-10", "CHECK 0107", "0107"),
+         (-450.00, "2023-04-02", "ACH OLD VENDOR", ""),
+         (-120.00, "2023-05-15", "DEBIT CARD PURCHASE", "")],
+        columns=["amount", "date", "description", "check_no"])
+    old["entity_id"] = "alpha"
+    old["account_fingerprint"] = "acct-hash-1"
+    bank = pd.concat([_bank(registry), validate_bank_transactions(
+        old, {e.id for e in registry})], ignore_index=True)
+    findings = reconcile(_books(), bank, registry, config)
+    assert not [f for f in findings if f.rule_id in ("T4-02", "T4-09")
+                and f.details.get("cleared_date", "9999").startswith("2023")]
+    notes = [f for f in findings if f.rule_id == "T4-01"]
+    assert len(notes) == 1 and str(notes[0].severity) == "INFO"
+    assert notes[0].details["lines"] == 3
+    assert notes[0].details["side"] == "disbursement"
+
+
+def test_recycled_check_number_is_not_an_alteration(registry, config):
+    # Check #1001 cleared in 2023 for a different amount than the 2026 book
+    # entry with the same (recycled) number. An undated match would call that a
+    # CRITICAL "alteration"; the date-constrained match must not pair them.
+    recycled = pd.DataFrame([(-77.25, "2023-06-01", "CHECK 1001", "1001")],
+                            columns=["amount", "date", "description", "check_no"])
+    recycled["entity_id"] = "alpha"
+    recycled["account_fingerprint"] = "acct-hash-1"
+    bank = pd.concat([_bank(registry), validate_bank_transactions(
+        recycled, {e.id for e in registry})], ignore_index=True)
+    findings = reconcile(_books(), bank, registry, config)
+    assert len(by_rule(findings, "T4-04")) == 1          # only the planted 1002 case
+    # the 2023 line is out of books coverage → part of the INFO note, not a T4-02
+    assert [f.details["lines"] for f in by_rule(findings, "T4-01")] == [1]
+    # and the 2026 book entry still matched its own 2026 clearing cleanly
+    assert all(f.details.get("check_no") != "1001" for f in by_rule(findings, "T4-02"))
+
+
+def test_small_unmatched_lines_are_info_not_critical(registry, config):
+    # In-coverage but below bank_min_critical_amount → INFO, still listed.
+    small = pd.DataFrame([(-4.00, "2026-05-14", "SERVICE FEE", ""),
+                          (-6.50, "2026-05-13", "CHECK 1044", "1044")],
+                         columns=["amount", "date", "description", "check_no"])
+    small["entity_id"] = "alpha"
+    small["account_fingerprint"] = "acct-hash-1"
+    bank = pd.concat([_bank(registry), validate_bank_transactions(
+        small, {e.id for e in registry})], ignore_index=True)
+    findings = reconcile(_books(), bank, registry, config)
+    fee = [f for f in by_rule(findings, "T4-09") if f.details["amount"] == 4.0]
+    chk = [f for f in by_rule(findings, "T4-02") if f.details.get("check_no") == "1044"]
+    assert fee and str(fee[0].severity) == "INFO"
+    assert chk and str(chk[0].severity) == "INFO"
+
+
+def test_recent_uncleared_check_is_ordinary_float_not_flagged(registry, config):
+    # A check recorded days before the last statement line hasn't had time to
+    # clear — flagging it as "never cleared" is noise, not a finding.
+    recent = pd.DataFrame([{"source_id": "TX-NEW", "txn_type": "check",
+                            "date": pd.Timestamp("2026-05-15"), "vendor_name": "Fresh Vendor",
+                            "amount": 640.0, "check_no": "1050", "entity_id": "alpha"}])
+    books = pd.concat([_books(), recent], ignore_index=True)
+    findings = reconcile(books, _bank(registry), registry, config)
+    flagged = {f.details.get("check_no") for f in by_rule(findings, "T4-02")}
+    assert "1050" not in flagged
+    assert "1003" in flagged    # the stale one (30+ days) is still flagged
+
+
+def test_journal_entry_matches_non_check_debit(registry, config):
+    # QB books often record transfers/loan payments/fees as journal entries; a
+    # matching journal line must absorb the bank debit instead of raising T4-09.
+    books = pd.concat([_books(), pd.DataFrame([
+        {"source_id": "JRN-1", "txn_type": "journal", "date": pd.Timestamp("2026-05-18"),
+         "vendor_name": None, "amount": -2500.00, "check_no": "", "entity_id": "alpha"}])],
+        ignore_index=True)
+    findings = reconcile(books, _bank(registry), registry, config)
+    assert by_rule(findings, "T4-09") == []   # the wire is explained by the journal
 
 
 def test_validate_rejects_unknown_entity(registry):

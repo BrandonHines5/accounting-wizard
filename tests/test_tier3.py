@@ -247,3 +247,96 @@ def test_anthropic_judge_empty_response_degrades_not_crashes(ctx, findings):
     apply_tier3([f], packets, judge)
     assert f.severity == Severity.CRITICAL
     assert "unavailable" in f.ai_assessment
+    assert f.ai_judge == "heuristic"        # failed → provisional, re-reviewed later
+
+
+def test_apply_tier3_records_provenance(ctx, registry, findings):
+    # Heuristic assessments persist as provisional; model ones as final.
+    f = Finding("T1-01", Severity.CRITICAL, ["alpha"], "?", transactions=["TX-001"])
+    packets = build_packets([f], ctx)
+    apply_tier3([f], packets, HeuristicJudge(), entities_map(registry))
+    assert f.ai_judge == "heuristic"
+
+
+# ---------------------------------------------------------------- batch judge
+
+class _FakeResultEntry:
+    def __init__(self, custom_id, payload):
+        from types import SimpleNamespace
+        self.custom_id = custom_id
+        self.result = SimpleNamespace(type="succeeded", message=_Response(payload))
+
+
+class _FakeBatchesAPI:
+    """messages.batches stub: one poll of 'in_progress', then 'ended'."""
+
+    def __init__(self, payload, drop_ids=()):
+        from types import SimpleNamespace
+        self._payload = payload
+        self._drop = set(drop_ids)
+        self._ns = SimpleNamespace
+        self.created = None
+        self.cancelled = []
+        self._polls = 0
+
+    def create(self, requests):
+        self.created = requests
+        return self._ns(id="batch-1", processing_status="in_progress")
+
+    def retrieve(self, batch_id):
+        self._polls += 1
+        status = "ended" if self._polls >= 1 else "in_progress"
+        return self._ns(id=batch_id, processing_status=status)
+
+    def results(self, batch_id):
+        for req in self.created:
+            if req["custom_id"] not in self._drop:
+                yield _FakeResultEntry(req["custom_id"], self._payload)
+
+    def cancel(self, batch_id):
+        self.cancelled.append(batch_id)
+
+
+class _FakeBatchClient:
+    def __init__(self, payload, drop_ids=()):
+        from types import SimpleNamespace
+        self.messages = SimpleNamespace(batches=_FakeBatchesAPI(payload, drop_ids))
+
+
+def test_batch_judge_parses_results_in_order_and_degrades_missing(ctx, findings):
+    from tier3.anthropic_judge import AnthropicBatchJudge
+    payload = json.dumps({
+        "assessment": "Reviewed via batch.", "severity": "HIGH",
+        "severity_reason": "", "false_positive_probability": 0.4,
+        "innocent_explanation": "", "recommended_action": "verify",
+        "recommended_action_detail": "",
+    })
+    subset = [f for f in findings][:3]
+    assert len(subset) >= 3
+    # second finding's result never comes back (errored/expired server-side)
+    client = _FakeBatchClient(payload, drop_ids={"finding-1"})
+    judge = AnthropicBatchJudge(client=client, poll_seconds=0)
+    packets = build_packets(subset, ctx)
+    out = judge.assess_all(packets)
+
+    assert len(out) == len(packets)
+    assert [len(client.messages.batches.created)] == [len(packets)]
+    assert out[0].assessment == "Reviewed via batch." and not out[0].failed
+    assert out[2].assessment == "Reviewed via batch."
+    assert out[1].failed and "unavailable" in out[1].assessment
+    assert out[1].severity == packets[1].finding.severity     # preserved on failure
+
+
+def test_batch_judge_single_packet_uses_synchronous_path(ctx, findings):
+    from tier3.anthropic_judge import AnthropicBatchJudge
+    payload = json.dumps({
+        "assessment": "Solo review.", "severity": "CRITICAL", "severity_reason": "",
+        "false_positive_probability": 0.1, "innocent_explanation": "",
+        "recommended_action": "escalate", "recommended_action_detail": "",
+    })
+    client = _FakeClient(payload)                 # plain messages.create client
+    judge = AnthropicBatchJudge(client=client, poll_seconds=0)
+    packets = build_packets([f for f in findings][:1], ctx)
+    out = judge.assess_all(packets)
+    assert out[0].assessment == "Solo review."
+    assert client.messages.calls                  # went through messages.create

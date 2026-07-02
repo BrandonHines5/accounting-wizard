@@ -3,9 +3,9 @@ alpha,qb,TX-001,check,2026-05-05,V-ACME,Acme Lumber,JOB-A,06-100,Checking,500.00
 alpha,qb,TX-002,check,2026-05-12,V-ACME,Acme Lumber,JOB-A,06-100,Checking,500.00,1015,1001,framing package,mike
 alpha,qb,TX-003,bill_payment,2026-05-08,V-SMITH,Smith Electric,JOB-A,16-200,Checking,1200.00,1002,88,rough-in,kelly
 alpha,qb,TX-004,bill_payment,2026-05-15,V-SMITH,Smith Electric,JOB-A,16-200,Checking,1200.50,1010,88A,rough-in,kelly
-alpha,qb,TX-005,check,2026-05-05,V-QPC,QuickPour Concrete,JOB-B,03-300,Checking,2000.00,1003,C1,flatwork,mike
-alpha,qb,TX-006,check,2026-05-08,V-QPC,QuickPour Concrete,JOB-B,03-300,Checking,2000.00,1004,C2,flatwork,mike
-alpha,qb,TX-007,check,2026-05-12,V-QPC,QuickPour Concrete,JOB-B,03-300,Checking,2000.00,1005,C3,flatwork,mike
+alpha,qb,TX-005,check,2026-05-05,V-QPC,QuickPour Concrete,JOB-B,03-300,Checking,2800.00,1003,C1,flatwork,mike
+alpha,qb,TX-006,check,2026-05-08,V-QPC,QuickPour Concrete,JOB-B,03-300,Checking,2700.00,1004,C2,flatwork,mike
+alpha,qb,TX-007,check,2026-05-12,V-QPC,QuickPour Concrete,JOB-B,03-300,Checking,2600.00,1005,C3,flatwork,mike
 alpha,qb,TX-008,check,2026-05-09,V-OFF,OffCycle Supply,JOB-A,01-100,Checking,300.00,1006,S1,site supplies,mike
 alpha,qb,TX-009,check,2026-05-15,V-NEWCO,NewCo Builders,JOB-B,05-100,Checking,8000.00,1007,N1,foundation sub,mike
 alpha,qb,TX-010,bill_payment,2026-05-01,V-ROOF,Roof Pros,JOB-A,07-100,Checking,6000.00,1008,R10,roofing,kelly
