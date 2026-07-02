@@ -192,9 +192,18 @@ class AnthropicBatchJudge(AnthropicJudge):
             deadline = time.monotonic() + self.timeout_seconds
             while batch.processing_status != "ended":
                 if time.monotonic() >= deadline:
+                    # A cancelled batch still transitions to "ended" and can carry
+                    # partial results for requests that finished before the cancel —
+                    # give it a short bounded grace poll so paid-for reviews aren't
+                    # discarded; only what's still missing degrades to the fallback.
+                    grace = time.monotonic() + max(self.poll_seconds, 10.0) * 3
                     try:
                         self.client.messages.batches.cancel(batch.id)
-                    except Exception:  # noqa: BLE001 — best-effort cleanup
+                        while (batch.processing_status != "ended"
+                               and time.monotonic() < grace):
+                            time.sleep(self.poll_seconds)
+                            batch = self.client.messages.batches.retrieve(batch.id)
+                    except Exception:  # noqa: S110 — best-effort cleanup
                         pass
                     break
                 time.sleep(self.poll_seconds)
@@ -209,7 +218,7 @@ class AnthropicBatchJudge(AnthropicJudge):
                     try:
                         results[entry.custom_id] = _parse(
                             entry.result.message, fallback=packets[index].finding.severity)
-                    except Exception:  # noqa: BLE001 — malformed single result
+                    except Exception:  # noqa: S110 — malformed single result, falls back below
                         pass
         except Exception as exc:  # noqa: BLE001 — batch API unavailable entirely
             return [_failed_assessment(p, exc) for p in packets]

@@ -30,8 +30,10 @@ def rule_precision_frame(prior: pd.DataFrame | None) -> pd.DataFrame:
     """Per-rule disposition history: how many findings each rule produced and how
     the human calls came out. 'Real-issue rate' = (error_corrected + escalated) /
     all dispositioned — the number that says which thresholds in rules.yaml to
-    tune next. Empty frame when history is missing or nothing is dispositioned."""
-    if prior is None or len(prior) == 0 or "rule_id" not in prior.columns:
+    tune next. Empty frame when history is missing or malformed; rules with only
+    open findings still get a row (blank rate) so coverage stays visible."""
+    if (prior is None or len(prior) == 0
+            or "rule_id" not in prior.columns or "disposition" not in prior.columns):
         return pd.DataFrame()
     counts = (prior.assign(disposition=prior["disposition"].astype(str))
               .groupby(["rule_id", "disposition"]).size().unstack(fill_value=0))
@@ -48,7 +50,7 @@ def rule_precision_frame(prior: pd.DataFrame | None) -> pd.DataFrame:
         "Escalated": counts["escalated"].values,
         "Real-issue rate": [
             f"{r / d:.0%}" if d else ""
-            for r, d in zip(real.values, dispositioned.values)],
+            for r, d in zip(real.values, dispositioned.values, strict=True)],
     }).sort_values("Rule ID").reset_index(drop=True)
     return out
 

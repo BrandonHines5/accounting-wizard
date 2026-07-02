@@ -302,12 +302,18 @@ def payment_without_matching_invoice(ctx: RunContext):
                                if -5 <= (p["date"] - c["date"]).days <= lookback)
                 outstanding = sum(b["cents"] for b in cands) - credit_c
                 if pc <= outstanding + tol_c:
+                    # Partial consumption: only the paid amount comes off the
+                    # oldest bills — the remainder stays outstanding so later
+                    # payments still reconcile against the true balance.
                     covered = 0
                     for b in sorted(cands, key=lambda b: b["date"]):
                         if covered >= pc:
                             break
-                        b["used"] = True
-                        covered += b["cents"]
+                        take = min(b["cents"], pc - covered)
+                        b["cents"] -= take
+                        covered += take
+                        if b["cents"] <= 0:
+                            b["used"] = True
                     continue
                 # 4) ties to no invoice and exceeds outstanding → exception
                 unmatched.append(p)

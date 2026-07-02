@@ -201,7 +201,10 @@ def apply_disposition_memory(
         key = _pattern_key(row["rule_id"], row.get("entity_ids"), row.get("details"))
         if key is None:
             continue
-        note = str(row.get("disposition_note") or "").strip()
+        # pd.isna guard: an all-null column round-trips as NaN, and str(NaN)
+        # would surface as a literal (your reason: "nan") in the finding.
+        raw_note = row.get("disposition_note")
+        note = "" if raw_note is None or pd.isna(raw_note) else str(raw_note).strip()
         if note or key not in cleared_patterns:
             cleared_patterns[key] = note
 

@@ -107,16 +107,20 @@ def _sync_sources(schema, registry, transactions, vendors) -> None:
     print(f"  Synced {len(registry)} entities, {n_v} vendors, {n_t} transactions to Supabase")
 
 
-def _tier3_cap() -> int:
-    """Max NEW findings to send to Tier 3 in one run (TIER3_MAX_REVIEW, default 200;
-    0 = unlimited). Bounds wall-clock so a large first-time backlog can't exceed the
-    job time limit — the rest are reviewed on later runs as this run's reviews persist
-    and stop being re-reviewed. Already-assessed findings are carried forward for free
-    and don't count against the cap."""
+def _tier3_cap(mode: str) -> int:
+    """Max NEW findings to send to Tier 3 in one run (TIER3_MAX_REVIEW; 0 =
+    unlimited). Bounds wall-clock so a large first-time backlog can't exceed the
+    job time limit — the rest are reviewed on later runs as this run's reviews
+    persist and stop being re-reviewed. Already-assessed findings are carried
+    forward for free and don't count against the cap.
+
+    Batch mode exists precisely to drain a backlog in one run, so it defaults to
+    unlimited; synchronous modes default to 200. TIER3_MAX_REVIEW overrides both."""
+    default = "0" if mode == "batch" else "200"
     try:
-        return max(0, int(os.environ.get("TIER3_MAX_REVIEW", "200")))
+        return max(0, int(os.environ.get("TIER3_MAX_REVIEW", default)))
     except ValueError:
-        return 200
+        return int(default)
 
 
 def _make_judge(mode: str, model: str | None):
@@ -476,7 +480,7 @@ def main() -> None:
         # inside the job's time limit (the remainder is reviewed on later runs once
         # these persist).
         to_review, carried, deferred = select_for_review(
-            findings, prior, _tier3_cap(), judge_kind=judge.kind)
+            findings, prior, _tier3_cap(args.tier3), judge_kind=judge.kind)
         if to_review:
             note = f"{len(carried)} carried forward" if carried else ""
             if deferred:

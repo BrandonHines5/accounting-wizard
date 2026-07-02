@@ -112,6 +112,20 @@ def test_on_account_payment_across_bills_is_clean(registry, config):
     assert _run(rows, registry, config) == []
 
 
+def test_on_account_consumption_is_partial_not_greedy(registry, config):
+    # The $6,000 on-account payment must consume exactly $6,000 of the $7,000
+    # open — leaving a $1,000 remainder a follow-up payment reconciles against.
+    # Greedy full-bill consumption would wrongly flag P2.
+    rows = [
+        _txn("B1", "Rollfwd Co", "bill", "2026-05-01", 2000.00),
+        _txn("B2", "Rollfwd Co", "bill", "2026-05-02", 2000.00),
+        _txn("B3", "Rollfwd Co", "bill", "2026-05-03", 3000.00),
+        _txn("P1", "Rollfwd Co", "bill_payment", "2026-05-10", 6000.00),
+        _txn("P2", "Rollfwd Co", "bill_payment", "2026-05-17", 1000.00),
+    ]
+    assert _run(rows, registry, config) == []
+
+
 def test_unmatched_payments_aggregate_to_one_finding_per_vendor(registry, config):
     # Two unsupported payments to one vendor → ONE finding carrying both, so the
     # reviewer answers one question, not one per check.

@@ -121,8 +121,8 @@ def _coverage_note(entity_id: str, side: str, skipped: list) -> Finding:
         "T4-01", Severity.INFO, [entity_id],
         question=(f"{len(skipped)} {side} bank line(s) totaling ${total:,.2f} "
                   f"({dates[0].date()} → {dates[-1].date()}) fall outside the period "
-                  "the ingested books cover, so they could not be verified. Extend the "
-                  "book export range if this period should be reconciled."),
+                  "the ingested books cover and could not be verified. Should the book "
+                  "export range be extended to reconcile this period?"),
         details={"stat_key": f"books_coverage_gap|{side}", "side": side,
                  "lines": len(skipped), "total": round(total, 2),
                  "first": str(dates[0].date()), "last": str(dates[-1].date())})
@@ -332,8 +332,9 @@ def _no_receipts_note(entity_id: str, deposits: pd.DataFrame) -> Finding:
         "T4-07", Severity.INFO, [entity_id],
         question=(f"Deposit-side reconciliation was skipped: the books contain no "
                   f"receipt/deposit transactions to match {len(deposits)} bank deposit(s) "
-                  f"totaling ${total:,.2f} against. Add a deposits/receipts export "
-                  "(e.g. QB Deposit Detail) to the weekly drop to enable T4-07/T4-08."),
+                  f"totaling ${total:,.2f} against. Should a deposits/receipts export "
+                  "(e.g. QB Deposit Detail) be added to the weekly drop to enable "
+                  "T4-07/T4-08?"),
         details={"stat_key": "no_receipts_ingested", "bank_deposits": len(deposits),
                  "total": round(total, 2)})
 

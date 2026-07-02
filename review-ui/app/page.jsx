@@ -224,19 +224,28 @@ function Dashboard({ supabase, session }) {
     if (reviewMsg) setReviewNote(reviewMsg);
   }
 
-  // One call dispositions the whole selection (allowlist-gated RPC). The optional
-  // shared note feeds the same feedback re-review as a single disposition.
-  async function dispositionBulk(value) {
+  // Dispositions the visible selection in one action (allowlist-gated RPC,
+  // chunked to its 500-fingerprint limit). Selections hidden by a filter
+  // applied AFTER selecting are excluded — you only act on what you can see.
+  // The optional shared note feeds the same feedback re-review as a single
+  // disposition.
+  async function dispositionBulk(value, selectable) {
     if (reviewing || selected.size === 0) return;
-    const fps = [...selected];
+    const visible = new Set(selectable.map((f) => f.fingerprint));
+    const fps = [...selected].filter((fp) => visible.has(fp));
+    if (fps.length === 0) return;
     const trimmed = bulkNote.trim();
     setReviewNote(null);
     setFindings((prev) =>
-      prev.map((f) => (selected.has(f.fingerprint) ? { ...f, _busy: true } : f)));
-    const { error } = await supabase.rpc("set_findings_disposition_bulk", {
-      p_fingerprints: fps, p_disposition: value, p_note: trimmed || null,
-    });
-    if (error) { await load(); setError(error.message); return; }
+      prev.map((f) => (visible.has(f.fingerprint) && selected.has(f.fingerprint)
+        ? { ...f, _busy: true } : f)));
+    for (let start = 0; start < fps.length; start += 500) {
+      const { error } = await supabase.rpc("set_findings_disposition_bulk", {
+        p_fingerprints: fps.slice(start, start + 500),
+        p_disposition: value, p_note: trimmed || null,
+      });
+      if (error) { await load(); setError(error.message); return; }
+    }
     setBulkNote("");
     let reviewMsg = null;
     if (trimmed) {
@@ -456,7 +465,7 @@ function Dashboard({ supabase, session }) {
                       placeholder="Shared reason (optional)" />
                     {DISPOSITIONS.map((d) => (
                       <button key={d.value} disabled={reviewing}
-                        onClick={() => dispositionBulk(d.value)}>
+                        onClick={() => dispositionBulk(d.value, selectable)}>
                         {d.label} all
                       </button>
                     ))}
