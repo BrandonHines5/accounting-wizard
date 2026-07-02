@@ -15,8 +15,13 @@ from core.findings import Finding, Severity
 from rules.engine import RunContext, rule
 
 
-@rule("T2-10", "Payment timing anomalies", requires="QB payment export (vendor, date)")
+@rule("T2-10", "Payment timing anomalies", requires="QB payment export (vendor, date)",
+      notes="Disabled in weekly runs by default (payment_timing_weekly in rules.yaml): "
+            "per-job construction vendors have irregular cadence by nature, so this is "
+            "a quarterly trend review, not a weekly queue item.")
 def payment_timing(ctx: RunContext):
+    if not ctx.config.param("payment_timing_weekly"):
+        return  # quarterly trend review — keep INFO noise out of the weekly queue
     min_payments = int(ctx.config.param("payment_timing_min_payments"))
     z_thresh = float(ctx.config.param("payment_timing_mad_z"))
 

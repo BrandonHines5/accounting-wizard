@@ -68,6 +68,7 @@ class Finding:
     ai_assessment: str = ""            # plain-English review, 2–4 sentences
     false_positive_probability: float | None = None   # 0.0–1.0, None = not assessed
     recommended_action: str = ""       # clear | verify | escalate
+    ai_judge: str = ""                 # provenance: "model" (final) | "heuristic" (provisional)
     original_severity: Severity | None = None  # set only when Tier 3 changed severity
 
     def to_row(self) -> dict:
