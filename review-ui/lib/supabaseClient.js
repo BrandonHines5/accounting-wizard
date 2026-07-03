@@ -6,12 +6,6 @@ import { createClient } from "@supabase/supabase-js";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  throw new Error(
-    "NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY must be set"
-  );
-}
-
 let _client;
 
 // Single browser client. Implicit flow keeps this a pure SPA: both the Microsoft
@@ -19,6 +13,13 @@ let _client;
 // session in the URL, which supabase-js picks up via detectSessionInUrl.
 export function getSupabase() {
   if (!_client) {
+    // Checked here rather than at module scope so `next build` prerendering
+    // doesn't require the env vars — the browser gets a clear error instead.
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      throw new Error(
+        "NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY must be set"
+      );
+    }
     _client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       auth: {
         flowType: "implicit",
