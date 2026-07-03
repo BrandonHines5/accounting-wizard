@@ -39,8 +39,11 @@ const MAX_OUTPUT_TOKENS = 2600;
 const redactDigits = (s: string | null) =>
   s ? s.replace(/\d([ -]?\d){6,}/g, "[redacted]") : s;
 
+// Auth is a Bearer JWT (not a cookie), so a hostile origin can't ride a victim's
+// session — but restrict browsers to the review UI's origin anyway when the
+// REVIEW_UI_ORIGIN secret is set (unset keeps the open default).
 const cors = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": Deno.env.get("REVIEW_UI_ORIGIN") ?? "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };

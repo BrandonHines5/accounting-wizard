@@ -1,13 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 
 // Public, anon key — protection is RLS + the allowlist-gated review RPCs, not key
-// secrecy. Env vars override the defaults so the project can be re-pointed without
-// a code change.
-const SUPABASE_URL =
-  process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wxzvboiymeyavebxkorh.supabase.co";
-const SUPABASE_ANON_KEY =
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind4enZib2l5bWV5YXZlYnhrb3JoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwNjAxNDYsImV4cCI6MjA5NjYzNjE0Nn0.zS4HsRwbQK6qGuLzPgOY-UV3Dfhoy1C9uKXEdKDtzyY";
+// secrecy. Still, no hardcoded fallbacks: baking the key into git pins the project
+// ref forever and makes rotation a code change instead of an env change.
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 let _client;
 
@@ -16,6 +13,13 @@ let _client;
 // session in the URL, which supabase-js picks up via detectSessionInUrl.
 export function getSupabase() {
   if (!_client) {
+    // Checked here rather than at module scope so `next build` prerendering
+    // doesn't require the env vars — the browser gets a clear error instead.
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      throw new Error(
+        "NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY must be set"
+      );
+    }
     _client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       auth: {
         flowType: "implicit",

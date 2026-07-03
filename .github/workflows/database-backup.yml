@@ -82,11 +82,36 @@ jobs:
           git archive --format=zip \
             -o "backups/code_${{ steps.filename.outputs.timestamp }}.zip" HEAD
 
+      - name: Encrypt backup for artifact upload
+        # The GitHub artifact is downloadable by anyone with repo read access,
+        # and the dump holds every vendor/transaction/finding. Encrypt it when
+        # secrets.BACKUP_PASSPHRASE is set; fall back to plain with a warning
+        # so backups never silently stop.
+        id: encrypt
+        env:
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+          BACKUP_FILE: backups/${{ steps.filename.outputs.filename }}.gz
+        run: |
+          set -euo pipefail
+          if [ -z "${BACKUP_PASSPHRASE:-}" ]; then
+            echo "::warning::BACKUP_PASSPHRASE not set - GitHub artifact uploaded unencrypted. Set the secret to encrypt DB dumps at rest."
+            echo "artifact_path=${BACKUP_FILE}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Feed the passphrase on fd 0 (not argv, which is visible in the
+          # process list) and use loopback pinentry so gpg-agent doesn't try to
+          # prompt in the non-interactive runner.
+          printf '%s' "$BACKUP_PASSPHRASE" | gpg --batch --yes \
+            --pinentry-mode loopback --passphrase-fd 0 \
+            --symmetric --cipher-algo AES256 \
+            -o "${BACKUP_FILE}.gpg" "$BACKUP_FILE"
+          echo "artifact_path=${BACKUP_FILE}.gpg" >> "$GITHUB_OUTPUT"
+
       - name: Upload backup as artifact
         uses: actions/upload-artifact@v4
         with:
           name: db-backup-${{ steps.filename.outputs.timestamp }}
-          path: backups/${{ steps.filename.outputs.filename }}.gz
+          path: ${{ steps.encrypt.outputs.artifact_path }}
           retention-days: 30
 
       - name: Upload to SharePoint (rclone)
@@ -106,7 +131,10 @@ jobs:
             echo "::warning::RCLONE_CONF not set - skipping SharePoint upload (artifact still made)."
             exit 0
           fi
-          curl -fsSL https://rclone.org/install.sh | sudo bash
+          # Install from the Ubuntu archive rather than piping rclone.org's
+          # install script to root bash — this step's env holds DB + SharePoint
+          # + Storage credentials, so no unpinned remote code here.
+          sudo apt-get install -y rclone
           mkdir -p ~/.config/rclone
           printf '%s' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
           chmod 0600 ~/.config/rclone/rclone.conf

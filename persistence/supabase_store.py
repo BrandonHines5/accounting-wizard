@@ -17,6 +17,8 @@ from __future__ import annotations
 import math
 import os
 
+from core.redaction import redact_digits
+
 import pandas as pd
 
 from core.findings import Finding
@@ -60,6 +62,10 @@ def _scrub_details(value):
                 if _norm_key(k) not in _SENSITIVE_NORMALIZED}
     if isinstance(value, list):
         return [_scrub_details(item) for item in value]
+    # Known sensitive keys are dropped above; here mask account/trace numbers
+    # embedded in free-text values (e.g. statement descriptions).
+    if isinstance(value, str):
+        return redact_digits(value)
     # NaN / +Inf / -Inf are not valid JSON; a rule that divided by zero (e.g. a
     # ratio on sparse new-entity data) must not crash the whole findings save.
     # Drop the non-finite stat to null rather than abort. (np.float64 is a float

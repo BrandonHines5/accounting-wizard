@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from core.findings import Finding
+from core.redaction import redact_digits
 from rules.engine import RunContext
 
 # Detail keys that carry a vendor name across the rule modules.
@@ -49,9 +50,14 @@ class JudgmentPacket:
     prior_findings: list[dict] = field(default_factory=list)
 
     def to_prompt_dict(self) -> dict:
-        """The JSON object handed to the model — finding + assembled context."""
+        """The JSON object handed to the model — finding + assembled context.
+
+        The whole payload is passed through `redact_digits` so account/trace
+        numbers embedded in any nested string (transaction memos, vendor
+        history, prior disposition notes — not just rule_details) are masked
+        before egress to the external model."""
         f = self.finding
-        return {
+        return redact_digits({
             "rule_id": f.rule_id,
             "current_severity": str(f.severity),
             "verification_question": f.question,
@@ -60,7 +66,7 @@ class JudgmentPacket:
             "transactions": self.transactions,
             "vendor_history": self.vendor_history,
             "prior_dispositions": self.prior_findings,
-        }
+        })
 
 
 def _vendor_names(finding: Finding, txns: pd.DataFrame) -> list[str]:
