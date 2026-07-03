@@ -89,7 +89,7 @@ export default function Page() {
     }
   }, []);
 
-  if (initError) return <div className="center muted">{initError}</div>;
+  if (initError) return <div className="center note err" role="alert">{initError}</div>;
   if (!supabase || session === undefined) return <div className="center muted">Loading…</div>;
   if (!session) return <Login supabase={supabase} />;
   return <Dashboard supabase={supabase} session={session} />;
