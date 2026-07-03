@@ -72,15 +72,24 @@ export default function Page() {
   // surfacing a clear error at runtime when the vars are missing.
   const [supabase, setSupabase] = useState(null);
   const [session, setSession] = useState(undefined); // undefined = loading
+  const [initError, setInitError] = useState(null);
 
   useEffect(() => {
-    const client = getSupabase();
-    setSupabase(client);
-    client.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = client.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub.subscription.unsubscribe();
+    // getSupabase() throws synchronously if NEXT_PUBLIC_SUPABASE_* are unset;
+    // catch it and surface the message rather than letting the throw unmount
+    // the whole React tree into a blank page.
+    try {
+      const client = getSupabase();
+      setSupabase(client);
+      client.auth.getSession().then(({ data }) => setSession(data.session));
+      const { data: sub } = client.auth.onAuthStateChange((_e, s) => setSession(s));
+      return () => sub.subscription.unsubscribe();
+    } catch (e) {
+      setInitError(e?.message || String(e));
+    }
   }, []);
 
+  if (initError) return <div className="center muted">{initError}</div>;
   if (!supabase || session === undefined) return <div className="center muted">Loading…</div>;
   if (!session) return <Login supabase={supabase} />;
   return <Dashboard supabase={supabase} session={session} />;
