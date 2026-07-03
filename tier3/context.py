@@ -9,33 +9,16 @@ call lives in `tier3.judge`.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 import pandas as pd
 
 from core.findings import Finding
+from core.redaction import redact_digits
 from rules.engine import RunContext
 
 # Detail keys that carry a vendor name across the rule modules.
 _VENDOR_DETAIL_KEYS = ("vendor", "vendor_a", "vendor_b")
-
-# Long digit runs (7+, allowing space/dash separators) in free text — bank
-# statement descriptions embed account/trace numbers, and this packet is sent
-# to an external model. Same egress guard as the feedback-review edge function
-# and the persistence scrub.
-_DIGIT_RUN = re.compile(r"\d([ -]?\d){6,}")
-
-
-def _redact_digits(value):
-    """Recursively mask long digit runs in string values before model egress."""
-    if isinstance(value, dict):
-        return {k: _redact_digits(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_redact_digits(item) for item in value]
-    if isinstance(value, str):
-        return _DIGIT_RUN.sub("[redacted]", value)
-    return value
 
 
 def _jsonable(value):
@@ -67,18 +50,23 @@ class JudgmentPacket:
     prior_findings: list[dict] = field(default_factory=list)
 
     def to_prompt_dict(self) -> dict:
-        """The JSON object handed to the model — finding + assembled context."""
+        """The JSON object handed to the model — finding + assembled context.
+
+        The whole payload is passed through `redact_digits` so account/trace
+        numbers embedded in any nested string (transaction memos, vendor
+        history, prior disposition notes — not just rule_details) are masked
+        before egress to the external model."""
         f = self.finding
-        return {
+        return redact_digits({
             "rule_id": f.rule_id,
             "current_severity": str(f.severity),
             "verification_question": f.question,
-            "rule_details": {k: _redact_digits(_jsonable(v)) for k, v in f.details.items()},
+            "rule_details": {k: _jsonable(v) for k, v in f.details.items()},
             "entity": self.entity,
             "transactions": self.transactions,
             "vendor_history": self.vendor_history,
             "prior_dispositions": self.prior_findings,
-        }
+        })
 
 
 def _vendor_names(finding: Finding, txns: pd.DataFrame) -> list[str]:

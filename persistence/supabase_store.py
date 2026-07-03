@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import math
 import os
-import re
+
+from core.redaction import redact_digits
 
 import pandas as pd
 
@@ -49,12 +50,6 @@ def _norm_key(key) -> str:
 
 _SENSITIVE_NORMALIZED = {_norm_key(k) for k in _SENSITIVE_DETAIL_KEYS}
 
-# Long digit runs (7+, allowing space/dash separators) embedded in free text —
-# bank statement descriptions routinely carry account/trace numbers ("ONLINE
-# TRANSFER TO CHK 123456789"). Same pattern migration 0015 applies to
-# disposition_note; dropping known keys alone doesn't catch these.
-_DIGIT_RUN = re.compile(r"\d([ -]?\d){6,}")
-
 
 def _scrub_details(value):
     """Recursively drop sensitive image/account fields before persisting.
@@ -67,8 +62,10 @@ def _scrub_details(value):
                 if _norm_key(k) not in _SENSITIVE_NORMALIZED}
     if isinstance(value, list):
         return [_scrub_details(item) for item in value]
+    # Known sensitive keys are dropped above; here mask account/trace numbers
+    # embedded in free-text values (e.g. statement descriptions).
     if isinstance(value, str):
-        return _DIGIT_RUN.sub("[redacted]", value)
+        return redact_digits(value)
     # NaN / +Inf / -Inf are not valid JSON; a rule that divided by zero (e.g. a
     # ratio on sparse new-entity data) must not crash the whole findings save.
     # Drop the non-finite stat to null rather than abort. (np.float64 is a float

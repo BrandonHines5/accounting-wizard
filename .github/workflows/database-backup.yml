@@ -98,8 +98,12 @@ jobs:
             echo "artifact_path=${BACKUP_FILE}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          gpg --batch --symmetric --cipher-algo AES256 \
-            --passphrase "$BACKUP_PASSPHRASE" \
+          # Feed the passphrase on fd 0 (not argv, which is visible in the
+          # process list) and use loopback pinentry so gpg-agent doesn't try to
+          # prompt in the non-interactive runner.
+          printf '%s' "$BACKUP_PASSPHRASE" | gpg --batch --yes \
+            --pinentry-mode loopback --passphrase-fd 0 \
+            --symmetric --cipher-algo AES256 \
             -o "${BACKUP_FILE}.gpg" "$BACKUP_FILE"
           echo "artifact_path=${BACKUP_FILE}.gpg" >> "$GITHUB_OUTPUT"
 
