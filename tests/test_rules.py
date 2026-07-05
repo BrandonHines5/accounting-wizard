@@ -78,6 +78,36 @@ def test_t1_11_new_vendor_large_payment(findings):
     assert hits[0].details["vendor"] == "NewCo Builders"
 
 
+def test_validate_vendors_normalizes_mixed_tz_first_seen():
+    """QBO vendor Created timestamps are tz-aware; QB Desktop's are tz-naive/absent.
+    validate_vendors must land them all tz-naive so T1-11's (tx_date - first_seen)
+    subtraction doesn't raise 'Cannot subtract tz-naive and tz-aware'."""
+    import pandas as pd
+
+    from core.model import VENDOR_COLUMNS, validate_vendors
+
+    def _row(**kw):
+        row = {c: None for c in VENDOR_COLUMNS}
+        row.update(kw)
+        return row
+
+    df = pd.DataFrame([
+        _row(entity_id="alpha", vendor_id="V1", vendor_name="Qbo Co",
+             first_seen="2026-01-02T10:00:00-06:00"),   # QBO CreateTime (tz-aware)
+        _row(entity_id="alpha", vendor_id="V2", vendor_name="Naive Co",
+             first_seen="2026-02-01"),                   # tz-naive
+        _row(entity_id="alpha", vendor_id="V3", vendor_name="NoDate Co",
+             first_seen=None),                           # QB Desktop, no Created
+    ])
+    out = validate_vendors(df, {"alpha"})
+    fs = out["first_seen"]
+    assert pd.api.types.is_datetime64_dtype(fs.dtype)    # tz-naive datetime (any unit)
+    assert fs.iloc[0].tzinfo is None and fs.iloc[1].tzinfo is None
+    assert pd.isna(fs.iloc[2])
+    # The exact operation that crashed the run now works.
+    assert (pd.Timestamp("2026-01-10") - fs.iloc[0]).days >= 0
+
+
 def test_t1_21_job_cost_transfer(findings):
     hits = by_rule(findings, "T1-21")
     assert len(hits) == 1

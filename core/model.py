@@ -120,7 +120,14 @@ def validate_vendors(df: pd.DataFrame, known_entity_ids: set[str]) -> pd.DataFra
     if missing:
         raise ValueError(f"Canonical vendors missing columns: {missing}")
     df = df.copy()
-    df["first_seen"] = pd.to_datetime(df["first_seen"])
+    # QuickBooks Online vendor "Created" timestamps carry a timezone offset (e.g.
+    # CreateTime "2026-01-02T10:00:00-06:00") while transaction dates are tz-naive.
+    # Normalize first_seen to tz-naive here so rules that subtract the two (T1-11
+    # new-vendor age) don't raise "Cannot subtract tz-naive and tz-aware". utc=True
+    # unifies a column that mixes tz-aware (QBO) and naive (QB Desktop) values before
+    # the zone is dropped.
+    df["first_seen"] = pd.to_datetime(
+        df["first_seen"], errors="coerce", utc=True).dt.tz_localize(None)
     unknown = set(df["entity_id"].dropna().unique()) - known_entity_ids
     if unknown:
         raise ValueError(
