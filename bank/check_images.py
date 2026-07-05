@@ -136,9 +136,17 @@ def verify_check_images(
     return bank, findings
 
 
+# A cancelled check corresponds to a payment, never a bill/credit — so we only ever
+# match its number against payment rows. This is belt-and-suspenders with the ingest
+# split (which keeps a bill's invoice number out of check_no): even if a document
+# number leaked into check_no, a bill can't be mistaken for the recorded check.
+_CHECK_BOOK_TYPES = {"check", "bill_payment"}
+
+
 def _book_check(transactions: pd.DataFrame, entity_id: str, check_no: str):
-    """The recorded book check for this entity + check number, if any."""
+    """The recorded book check (a payment) for this entity + check number, if any."""
     same = transactions[(transactions["entity_id"] == entity_id)
+                        & transactions["txn_type"].isin(_CHECK_BOOK_TYPES)
                         & (transactions["check_no"].map(_norm_check) == check_no)]
     return None if same.empty else same.iloc[0]
 

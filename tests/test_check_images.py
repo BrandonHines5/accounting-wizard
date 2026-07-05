@@ -129,3 +129,40 @@ def test_non_check_rows_are_skipped(registry, config):
     _, findings = verify_check_images(bank, _books(), reader, registry, config,
                                       fetch_front=lambda ref: ref.encode())
     assert findings == [] and reader.calls == 0
+
+
+def test_bill_sharing_check_number_never_shadows_the_real_check(registry, config):
+    """Regression (check #8108): a vendor bill can carry the same document number in
+    QB's 'Num' column as an unrelated payment. The cancelled check must be compared
+    against the *payment* that actually cleared, never the like-numbered bill — else
+    the image (correctly reading the payment amount) trips a false T4-04 alteration
+    against the bill's amount. The bill is listed FIRST so a naive first-match would
+    grab it."""
+    books = pd.DataFrame(
+        [
+            # Bill from Affordable Gutters, invoice no. 8108 — leaks into check_no.
+            ("BILL-8108", "bill", "Affordable Gutters", 2808.00, "8108"),
+            # The real check: bill payment to Yesenia Rivera, check no. 8108.
+            ("PMT-8108", "bill_payment", "Yesenia Rivera", 12197.00, "8108"),
+        ],
+        columns=["source_id", "txn_type", "vendor_name", "amount", "check_no"],
+    )
+    books["entity_id"] = "alpha"
+    books["date"] = pd.to_datetime("2026-04-22")
+
+    bank = pd.DataFrame([("8108", "img-8108", -12197.00)],
+                        columns=["check_no", "image_ref", "amount"])
+    bank["entity_id"] = "alpha"
+    bank["account_fingerprint"] = "acct-hash-9"
+    bank["date"] = pd.to_datetime("2026-04-22")
+    bank["description"] = "CHECK"
+    bank = validate_bank_transactions(bank, {e.id for e in registry})
+
+    reader = FakeReader({"img-8108": CheckRead(payee="Yesenia Rivera",
+                                               amount=12197.00, confidence=99)})
+    _, findings = verify_check_images(bank, books, reader, registry, config,
+                                      fetch_front=lambda ref: ref.encode())
+
+    # Image matches the payment on both payee and amount → no finding at all, and
+    # certainly no T4-04 alteration comparing $12,197 read against the bill's $2,808.
+    assert findings == []
