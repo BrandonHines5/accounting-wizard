@@ -2,7 +2,7 @@
 code mismatch) and T1-14 (vendor bank-detail change)."""
 import pandas as pd
 
-from rules.billing import manual_check_on_ap_vendor
+from rules.billing import duplicate_payment_fuzzy, manual_check_on_ap_vendor
 from rules.coding import vendor_costcode_mismatch
 from rules.engine import RunContext
 from rules.vendor_master import vendor_bank_detail_change
@@ -26,6 +26,39 @@ def _txns(rows):
 def _vendors(rows):
     return pd.DataFrame(rows, columns=["entity_id", "vendor_id", "vendor_name",
                                        "bank_fingerprint"])
+
+
+# ---- T1-02 merchant-processor fee exclusion ------------------------------------
+
+def _pay(rows):
+    # rows: (vendor_name, amount, date, source_id)
+    df = pd.DataFrame(rows, columns=["vendor_name", "amount", "date", "source_id"])
+    df["entity_id"] = "alpha"
+    df["txn_type"] = "check"
+    df["invoice_no"] = None
+    df["check_no"] = ""
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def test_t1_02_skips_recurring_processor_fees(registry, config):
+    # QuickBooks Payments / Intuit debits a per-settlement fee — equal small amounts
+    # recur by design and must NOT be flagged as duplicate payments.
+    rows = [("Intuit", 15.00, "2026-05-05", "F1"), ("Intuit", 15.00, "2026-05-11", "F2"),
+            ("Intuit", 3.00, "2026-05-12", "F3"), ("Intuit", 3.00, "2026-05-15", "F4")]
+    findings = list(duplicate_payment_fuzzy(
+        _ctx(txns=_pay(rows), registry=registry, config=config)))
+    assert findings == []
+
+
+def test_t1_02_still_flags_non_processor_and_large_processor(registry, config):
+    # A non-processor vendor's equal undocumented payments still flag; and a processor
+    # payment ABOVE the fee ceiling isn't a fee, so it still flags — no over-suppression.
+    rows = [("Acme", 15.00, "2026-05-05", "A1"), ("Acme", 15.00, "2026-05-08", "A2"),
+            ("Intuit", 5000.00, "2026-05-05", "B1"), ("Intuit", 5000.00, "2026-05-08", "B2")]
+    findings = list(duplicate_payment_fuzzy(
+        _ctx(txns=_pay(rows), registry=registry, config=config)))
+    assert {f.details["vendor"] for f in findings} == {"Acme", "Intuit"}
 
 
 # ---- T1-20 vendor/cost-code mismatch -------------------------------------------

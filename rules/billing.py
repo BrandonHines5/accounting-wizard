@@ -35,6 +35,10 @@ def _norm_invoice(value) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value).lower()) if pd.notna(value) else ""
 
 
+def _is_processor(vendor, processors: list) -> bool:
+    return bool(processors) and any(p.search(str(vendor or "")) for p in processors)
+
+
 @rule("T1-01", "Duplicate payment — exact", requires="QB Vendor Transaction Detail")
 def duplicate_payment_exact(ctx: RunContext):
     for entity_id in ctx.active_entity_ids:
@@ -65,10 +69,17 @@ def duplicate_payment_exact(ctx: RunContext):
 def duplicate_payment_fuzzy(ctx: RunContext):
     tol = float(ctx.config.param("fuzzy_dup_amount_tolerance"))
     window = int(ctx.config.param("fuzzy_dup_window_days"))
+    processors = ctx.config.patterns("merchant_processor_patterns")
+    fee_ceiling = float(ctx.config.defaults.get("merchant_fee_dup_ceiling", 0) or 0)
     for entity_id in ctx.active_entity_ids:
         pay = _payments(ctx, entity_id, DUP_TYPES).sort_values("date")
         seen_pairs: set[tuple[str, str]] = set()
         for vendor, grp in pay.groupby("vendor_name"):
+            # A payment processor (QuickBooks Payments / Intuit) debits a fee on every
+            # daily settlement, so equal small amounts recur by design — its fee-sized
+            # charges are cadence, not duplicate payments. Larger processor payments
+            # still flag (only charges at/below the fee ceiling are exempt).
+            processor = _is_processor(vendor, processors) and fee_ceiling > 0
             # Recurring obligations (rent, loan payments, dues): 3+ equal
             # amounts spaced ≥ 15 days apart are a cadence, not duplicates —
             # don't flag undocumented pairs within them.
@@ -85,6 +96,8 @@ def duplicate_payment_fuzzy(ctx: RunContext):
                         break  # rows are date-sorted
                     if abs(a["amount"] - b["amount"]) > tol:
                         continue
+                    if processor and a["amount"] <= fee_ceiling and b["amount"] <= fee_ceiling:
+                        continue  # recurring per-settlement processing fees, not a duplicate
                     inv_a, inv_b = _norm_invoice(a["invoice_no"]), _norm_invoice(b["invoice_no"])
                     if not inv_a and not inv_b and a["amount"] in recurring_amounts \
                             and b["amount"] in recurring_amounts:

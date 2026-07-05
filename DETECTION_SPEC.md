@@ -19,7 +19,7 @@ active entities. Severity escalation for nonprofit entities keys off
 | ID | Check | Logic | Sources | Severity |
 |---|---|---|---|---|
 | T1-01 | Duplicate payment — exact | Same vendor + amount + invoice no. paid 2+ times | QB Check/Vendor Detail | CRITICAL |
-| T1-02 | Duplicate payment — fuzzy | Same vendor, amount within $1 or invoice no. differing by suffix/prefix, within 60 days | QB | CRITICAL |
+| T1-02 | Duplicate payment — fuzzy | Same vendor, amount within $1 or invoice no. differing by suffix/prefix, within a short configurable window (`fuzzy_dup_window_days`, default 10). Recurring-cadence and payment-processor fees (`merchant_processor_patterns`, at/below the fee ceiling — QuickBooks Payments/Intuit debits a fee every settlement) are excluded | QB | CRITICAL |
 | T1-03 | Approval bypass | Payment in QB with no matching approved bill in Adaptive (AP items) | QB + Adaptive | CRITICAL |
 | T1-04 | Threshold splitting | 2+ payments to one vendor within 7 days, each below approval threshold, sum above it | QB + Adaptive | HIGH |
 | T1-05 | Bill exceeds PO | Bill amount > PO amount (tolerance configurable, default 2%) | Adaptive/BT POs + QB | HIGH |
@@ -137,7 +137,7 @@ the sweep account's statement so each transfer matches its mirror.
 | T4-06 | Clearing-gap analysis | Recorded-date vs. cleared-date outliers (kiting/holding indicators) | MEDIUM |
 | T4-07 | Deposit-side match | Client payments / donations recorded in QB ↔ bank deposits; short or missing deposits | CRITICAL |
 | T4-08 | Nonprofit donation reconciliation | Donation acknowledgments/pledges vs. actual deposits — runs for every nonprofit entity in the registry (currently Hope Filled Homes) | CRITICAL |
-| T4-09 | Non-check disbursement sweep | Every ACH, wire, debit-card bank line matched to a book entry; recognized internal cash-management sweeps (`sweep_transfer_patterns`) are matched as internal transfers, not flagged | CRITICAL if unmatched |
+| T4-09 | Non-check disbursement sweep | Every ACH, wire, debit-card bank line matched to a book entry; recognized internal cash-management sweeps (`sweep_transfer_patterns`) and payment-processor fees (`merchant_*` — QuickBooks Payments/Intuit, reconciled against the processor's gross deposits at the expected rate) are matched, not flagged | CRITICAL if unmatched |
 
 **Image handling:** confidence score per read; < 90% confidence → human review queue.
 Images stay in SharePoint (restricted); Supabase stores reads + path reference only.

@@ -98,6 +98,32 @@ defaults:
   sweep_transfer_patterns:
     - 'trnsfr (to|from) account ending in \d{3,}'   # First Service Bank Cash Manager sweep
 
+  # Tier 1/4: merchant card/ACH processing fees (e.g. QuickBooks Payments / Intuit).
+  # Client invoice payments taken through a payment processor deposit GROSS, and the
+  # processor debits its fee separately per settlement. Those fees are legitimate,
+  # recurring per-deposit charges — NOT duplicate payments (T1-01/02) or unrecorded
+  # disbursements (T4-09). QuickBooks Payments pricing: bank/ACH ("Check E-Invoice")
+  # = 1% capped at $15/txn; card ("Card E-Invoice") = 3.5% + $0.30/txn. Recognized
+  # by description/vendor pattern and reconciled against the processor's own gross
+  # deposits at the expected rate; anything above the expected fee band (e.g. a
+  # material "PYMT SOLN" debit — a refund/chargeback/funding reversal) is NOT
+  # auto-recognized and stays reviewable. Patterns are case-insensitive regexes.
+  merchant_processor_patterns:     # vendor-name / bank-description tags for a processor
+    - '\bintuit\b'                 # anchored so "Intuitive Consulting" et al. don't match
+    - '\bquickbooks\b'
+  merchant_fee_desc_patterns:      # bank-line descriptions that ARE a processor fee
+    - 'tran fee'
+  merchant_deposit_desc_patterns:  # bank-line descriptions that are processor gross deposits
+    - 'deposit'
+  merchant_fee_max_flat: 15.0      # per-transaction $ cap (QBO bank/ACH 1% capped $15);
+                                   # a processor charge at/below this is always a plausible fee
+  merchant_fee_max_rate: 0.04      # a processor fee above this fraction of the deposits it
+                                   # settles (QBO card 3.5% + $0.30, rounded up) is NOT a fee
+  merchant_fee_window_days: 5      # match a fee to the processor deposits within this window
+  merchant_fee_dup_ceiling: 250.0  # T1-01/02: a processor charge at/below this is a
+                                   # per-settlement fee, not a duplicate payment (max observed
+                                   # daily fee ~$191); larger processor payments still flag
+
   # Tier 2 statistical checks
   round_number_base: 100           # T2-02: "round" = an exact multiple of this dollar amount
   round_number_min_count: 12       # T2-02: min payments before the round ratio is meaningful

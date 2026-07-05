@@ -1,6 +1,7 @@
 """Rule parameter configuration (config/rules.yaml)."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -24,6 +25,12 @@ class RulesConfig:
 
     def param(self, key: str):
         return self.defaults[key]
+
+    def patterns(self, key: str) -> list[re.Pattern]:
+        """Compile a defaults list of case-insensitive regexes (empty when absent).
+        Shared by the rule modules so pattern semantics — case-insensitivity, empty
+        handling — can't silently diverge between Tier 1 and Tier 4."""
+        return [re.compile(p, re.IGNORECASE) for p in (self.defaults.get(key) or [])]
 
     def approval_threshold(self, entity: Entity) -> float:
         """Per-entity AP approval threshold, falling back to the global default."""

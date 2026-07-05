@@ -389,6 +389,48 @@ def test_sweep_back_credit_not_flagged_as_unrecorded_inflow(registry, config):
     assert len(note) == 1 and str(note[0].severity) == "INFO" and note[0].rule_id == "T4-07"
 
 
+def _merchant_bank(registry) -> pd.DataFrame:
+    # QuickBooks Payments / Intuit: gross client payment deposits and the processor's
+    # separate per-settlement fee debits (1% capped $15/txn). A material "PYMT SOLN"
+    # debit (refund/chargeback) is NOT a fee and must stay flagged.
+    rows = [
+        (28350.00, "2026-05-11", "INTUIT 00034335 DEPOSIT MERCHTESTACCT", ""),
+        (-15.00, "2026-05-11", "INTUIT 25474903 TRAN FEE MERCHTESTACCT", ""),   # capped fee
+        (-3.00, "2026-05-12", "INTUIT 00739895 TRAN FEE MERCHTESTACCT", ""),     # 1% small sale
+        (-22575.00, "2026-05-13", "INTUIT PYMT SOLN INTUITPMTS MERCHTESTACCT", ""),  # NOT a fee
+    ]
+    df = pd.DataFrame(rows, columns=["amount", "date", "description", "check_no"])
+    df["entity_id"] = "alpha"
+    df["account_fingerprint"] = "acct-hash-1"
+    return validate_bank_transactions(df, {e.id for e in registry})
+
+
+def test_merchant_fees_recognized_material_debit_still_flagged(registry, config):
+    bank = pd.concat([_bank(registry), _merchant_bank(registry)], ignore_index=True)
+    findings = reconcile(_books(), bank, registry, config)
+    # the $15 + $3 Intuit fees reconcile to the gross deposit → one INFO note, no per-line flag
+    note = [f for f in by_rule(findings, "T4-09") if f.details.get("stat_key") == "merchant_fees"]
+    assert len(note) == 1 and str(note[0].severity) == "INFO" and note[0].details["lines"] == 2
+    assert not [f for f in by_rule(findings, "T4-09") if f.details.get("amount") in (15.0, 3.0)]
+    # the material $22,575 PYMT SOLN debit is NOT a fee → still a CRITICAL exception
+    big = [f for f in by_rule(findings, "T4-09") if f.details.get("amount") == 22575.0]
+    assert big and str(big[0].severity) == "CRITICAL"
+
+
+def test_oversized_processor_fee_is_not_auto_recognized(registry, config):
+    # A "TRAN FEE" far above the expected band (no gross deposit to justify it) must
+    # NOT be silently cleared — it falls through to a normal T4-09.
+    odd = pd.DataFrame([(-900.00, "2026-05-14", "INTUIT 99 TRAN FEE MERCHTESTACCT", "")],
+                       columns=["amount", "date", "description", "check_no"])
+    odd["entity_id"] = "alpha"
+    odd["account_fingerprint"] = "acct-hash-1"
+    bank = pd.concat([_bank(registry), validate_bank_transactions(
+        odd, {e.id for e in registry})], ignore_index=True)
+    findings = reconcile(_books(), bank, registry, config)
+    flagged = [f for f in by_rule(findings, "T4-09") if f.details.get("amount") == 900.0]
+    assert flagged and str(flagged[0].severity) == "CRITICAL"
+
+
 def test_validate_rejects_unknown_entity(registry):
     bad = pd.DataFrame([{"entity_id": "ghost", "account_fingerprint": "x",
                          "date": "2026-05-01", "amount": -10.0}])
