@@ -49,16 +49,17 @@ def _norm_check(value) -> str:
     return str(value).strip()
 
 
-def _human_dispositioned(prior: pd.DataFrame | None, fingerprint: str) -> bool:
-    """True when the findings history already carries a NON-open (human)
-    disposition for this fingerprint — a person's decision always wins over the
-    automation, so the finding is left exactly as the human left it."""
+def _dispositioned_fingerprints(prior: pd.DataFrame | None) -> set:
+    """Fingerprints in history that already carry a NON-open (human) disposition —
+    a person's decision always wins over the automation, so these are never
+    auto-resolved. Computed once per run so the candidate loop stays O(findings),
+    not O(findings × history) as the history table grows."""
     if prior is None or len(prior) == 0 or "fingerprint" not in prior.columns \
             or "disposition" not in prior.columns:
-        return False
-    rows = prior[prior["fingerprint"] == fingerprint]
-    return any(str(d).strip().lower() not in ("", "open", "none", "nan")
-               for d in rows["disposition"])
+        return set()
+    mask = ~prior["disposition"].astype(str).str.strip().str.lower().isin(
+        ("", "open", "none", "nan"))
+    return set(prior.loc[mask, "fingerprint"])
 
 
 def _distinct_clears(involved: pd.DataFrame, disb: pd.DataFrame,
@@ -70,7 +71,10 @@ def _distinct_clears(involved: pd.DataFrame, disb: pd.DataFrame,
     partial match (e.g. only one of two clears is on an ingested statement) is not
     a confirmation."""
     used: list = []
-    for _, tx in involved.iterrows():
+    # Date-ordered so the greedy nearest-clear claim is deterministic and doesn't
+    # depend on the book frame's row order (an earlier row can otherwise claim a
+    # later row's better match and fail an otherwise-confirmable duplicate).
+    for _, tx in involved.sort_values("date").iterrows():
         amt = abs(float(tx["amount"]))
         cands = disb[~disb.index.isin(used)
                      & ((disb["_amt"] - amt).abs() <= amount_tol)]
@@ -89,15 +93,21 @@ def _distinct_clears(involved: pd.DataFrame, disb: pd.DataFrame,
     return used
 
 
-def _mark_resolved(finding: Finding, per_payment: float, matched: pd.DataFrame,
+def _mark_resolved(finding: Finding, matched: pd.DataFrame,
                    ceiling: float, register: str | None) -> None:
     """Disposition the finding `legit` with the bank evidence attached (never a
-    silent drop): the distinct cleared dates, the spacing, and the register."""
+    silent drop): the distinct cleared dates, the amount(s), the spacing, and the
+    register. Fuzzy (T1-02) duplicates can clear at amounts differing within the
+    match tolerance, so the note reports every distinct cleared amount rather than
+    assuming one — the record is attached to a resolved CRITICAL."""
     dates = sorted(d.date().isoformat() for d in matched["date"])
     span = (matched["date"].max() - matched["date"].min()).days
+    amounts = sorted(round(float(a), 2) for a in matched["_amt"].unique())
+    amount_str = ("/".join(f"${a:,.2f}" for a in amounts) if len(amounts) > 1
+                  else f"${amounts[0]:,.2f}")
     note = (
-        f"Auto-resolved (bank-verified): Tier 4 confirms this ${per_payment:,.2f} "
-        f"charge cleared as {len(matched)} separate bank debits on {', '.join(dates)} "
+        f"Auto-resolved (bank-verified): Tier 4 confirms {amount_str} "
+        f"cleared as {len(matched)} separate bank debits on {', '.join(dates)} "
         f"— {span} days apart, consistent with recurring billing, not one obligation "
         f"paid twice. Each payment is at or below the ${ceiling:,.0f} auto-resolve "
         "ceiling. Resolved automatically; reversible on review."
@@ -127,14 +137,18 @@ def auto_resolve_bank_verified(
     with its evidence. A no-op (returns everything in `kept`) when the feature is
     disabled (`auto_resolve_max_amount` <= 0) or no bank data is present."""
     ceiling = float(config.defaults.get("auto_resolve_max_amount", 0) or 0)
+    _by_severity = lambda f: (-int(f.severity), f.rule_id)  # noqa: E731
     if ceiling <= 0 or bank is None or len(bank) == 0:
-        return list(findings), []
+        # Sort even on the no-op path so output ordering doesn't silently depend on
+        # whether the feature ran (config/bank-data availability).
+        return sorted(findings, key=_by_severity), []
 
     min_spacing = int(config.defaults.get("auto_resolve_min_spacing_days", 0) or 0)
     amount_tol = float(config.param("bank_amount_tolerance"))
     date_tol = int(config.param("bank_date_tolerance_days"))
     check_max_days = int(config.param("check_match_max_days"))
     source_col = transactions["source_id"].astype(str)
+    dispositioned_fps = _dispositioned_fingerprints(prior)
 
     kept: list[Finding] = []
     auto_resolved: list[Finding] = []
@@ -142,7 +156,7 @@ def auto_resolve_bank_verified(
         if (finding.rule_id not in AUTO_RESOLVE_RULES
                 or finding.disposition != Disposition.OPEN
                 or not finding.entity_ids or len(finding.transactions) < 2
-                or _human_dispositioned(prior, finding.fingerprint())):
+                or finding.fingerprint() in dispositioned_fps):
             kept.append(finding)
             continue
 
@@ -181,9 +195,8 @@ def auto_resolve_bank_verified(
                 if account_labels.get(fp):
                     register = account_labels[fp]
                     break
-        _mark_resolved(finding, abs(float(involved["amount"].iloc[0])),
-                       matched, ceiling, register)
+        _mark_resolved(finding, matched, ceiling, register)
         auto_resolved.append(finding)
 
-    kept.sort(key=lambda f: (-int(f.severity), f.rule_id))
+    kept.sort(key=_by_severity)
     return kept, auto_resolved

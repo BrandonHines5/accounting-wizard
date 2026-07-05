@@ -111,7 +111,7 @@ def write_workbook(
         # workbook shape (and its test) is unchanged.
         if auto_resolved:
             findings_frame(auto_resolved).to_excel(
-                writer, sheet_name="Auto-resolved", index=False)
+                writer, sheet_name="Auto-resolved (verified)", index=False)
         # Per-rule precision from history: the tuning feedback loop. Only added
         # when there IS history, so the default workbook shape is unchanged.
         precision = rule_precision_frame(prior)

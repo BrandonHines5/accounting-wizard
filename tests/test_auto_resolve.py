@@ -227,3 +227,44 @@ def test_persist_auto_disposition_never_overwrites_human():
     prior = store.load_prior()
     row = prior[prior["fingerprint"] == f.fingerprint()].iloc[0]
     assert row["disposition"] == "escalated"
+
+
+class _FakeTable:
+    """Captures the Supabase write shape (payload + .eq filters) without a client."""
+    def __init__(self):
+        self.payload = None
+        self.filters = []
+
+    def update(self, payload):
+        self.payload = payload
+        return self
+
+    def eq(self, column, value):
+        self.filters.append((column, value))
+        return self
+
+    def execute(self):
+        return None
+
+
+def test_supabase_persist_auto_disposition_shape_and_open_guard():
+    # The production adapter must UPDATE disposition=legit stamped with the auto
+    # provenance + a note + dispositioned_at, and guard the write to still-open
+    # rows via .eq("disposition", "open") so a human call is never overwritten.
+    from persistence.supabase_store import SupabaseFindingsStore
+    store = SupabaseFindingsStore.__new__(SupabaseFindingsStore)
+    store._table = _FakeTable()
+    f = _dup(["VT-1", "VT-2"])
+    f.disposition = Disposition.LEGIT
+    f.details["auto_resolution"] = "Auto-resolved (bank-verified): cleared 2026-04-08, 2026-05-08"
+    f.details["dispositioned_by"] = "auto:bank-verified"
+
+    store.persist_auto_dispositions([f])
+
+    payload = store._table.payload
+    assert payload["disposition"] == "legit"
+    assert payload["dispositioned_by"] == "auto:bank-verified"
+    assert payload["disposition_note"]        # non-empty evidence note
+    assert payload["dispositioned_at"]        # stamped
+    assert ("fingerprint", f.fingerprint()) in store._table.filters
+    assert ("disposition", "open") in store._table.filters   # the human-wins guard
