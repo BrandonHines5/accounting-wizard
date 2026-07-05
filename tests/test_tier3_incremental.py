@@ -93,6 +93,23 @@ def test_heuristic_stub_is_carried_when_judge_is_heuristic():
     assert a.ai_judge == "heuristic"
 
 
+def test_carried_null_recommended_action_does_not_become_string_nan():
+    # Regression: a prior MODEL review with a NULL recommended_action (legacy rows
+    # assessed before the column existed) round-trips through pandas as a float NaN.
+    # NaN is truthy, so the old `value or ""` yielded the literal string "nan" — which
+    # then failed the findings_recommended_action_check and aborted the whole save().
+    a = _f("T1-01", "TX-A")
+    prior = pd.DataFrame([
+        {"fingerprint": a.fingerprint(), "ai_assessment": "real model review",
+         "ai_judge": "model", "false_positive_probability": float("nan"),
+         "recommended_action": float("nan")},
+    ])
+    to_review, carried, _ = select_for_review([a], prior, max_review=0, judge_kind="model")
+    assert carried == [a] and to_review == []      # reused, not re-reviewed
+    assert a.recommended_action == ""              # NOT "nan" — the poisoned value
+    assert a.false_positive_probability is None
+
+
 def test_ai_judge_column_wins_over_text_inference():
     a, b = _f("T1-01", "TX-A"), _f("T1-02", "TX-B")
     prior = pd.DataFrame([

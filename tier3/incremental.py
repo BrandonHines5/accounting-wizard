@@ -51,6 +51,16 @@ def _clamp01(value):
     return max(0.0, min(1.0, p)) if p == p else None    # NaN-safe
 
 
+def _clean_action(value) -> str:
+    """A stored recommended_action as a clean string, or '' when unset.
+
+    A NULL recommended_action round-trips through pandas as a float NaN, and NaN is
+    truthy — so `value or ''` yields the NaN (str()'d to the literal 'nan', which
+    fails the findings_recommended_action_check on the next save). Guard on type
+    instead of truthiness."""
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _assessed(prior: pd.DataFrame | None) -> dict[str, dict]:
     """fingerprint -> stored triage (assessment, provenance kind, fp probability,
     recommended action), for prior findings carrying a non-empty assessment.
@@ -68,7 +78,7 @@ def _assessed(prior: pd.DataFrame | None) -> dict[str, dict]:
             "assessment": assessment,
             "kind": _judge_kind(assessment, row.get("ai_judge")),
             "false_positive_probability": _clamp01(row.get("false_positive_probability")),
-            "recommended_action": (str(row.get("recommended_action") or "").strip()),
+            "recommended_action": _clean_action(row.get("recommended_action")),
         }
     return out
 

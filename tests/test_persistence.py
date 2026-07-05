@@ -152,6 +152,31 @@ def test_supabase_persist_assessments_updates_never_inserts():
           "ai_judge": "model"})]
 
 
+def test_supabase_row_sanitizes_constraint_violating_triage_values():
+    # Regression: a poisoned recommended_action (the literal "nan" a NULL becomes when
+    # carried through pandas), a NaN false_positive_probability, or a bogus ai_judge must
+    # be coerced to a constraint-satisfying value — otherwise one row's CHECK violation
+    # (23514) aborts the ENTIRE batch save and the run persists nothing.
+    from persistence.supabase_store import SupabaseFindingsStore
+    bad = Finding("T1-01", Severity.CRITICAL, ["alpha"], "?", transactions=["TX-1"])
+    bad.recommended_action = "nan"
+    bad.false_positive_probability = float("nan")
+    bad.ai_judge = "bogus"
+    row = SupabaseFindingsStore._row(bad)
+    assert row["recommended_action"] is None
+    assert row["false_positive_probability"] is None
+    assert row["ai_judge"] is None
+
+    good = Finding("T1-02", Severity.HIGH, ["alpha"], "?", transactions=["TX-2"])
+    good.recommended_action = "clear"
+    good.false_positive_probability = 0.42
+    good.ai_judge = "model"
+    grow = SupabaseFindingsStore._row(good)
+    assert grow["recommended_action"] == "clear"
+    assert grow["false_positive_probability"] == 0.42
+    assert grow["ai_judge"] == "model"
+
+
 # ---------------------------------------------------------------- disposition memory
 
 def test_no_prior_is_noop(ctx, registry, findings):
