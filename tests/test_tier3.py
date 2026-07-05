@@ -340,3 +340,15 @@ def test_batch_judge_single_packet_uses_synchronous_path(ctx, findings):
     out = judge.assess_all(packets)
     assert out[0].assessment == "Solo review."
     assert client.messages.calls                  # went through messages.create
+
+
+def test_batch_judge_timeout_defaults_to_4h_and_honors_env(monkeypatch):
+    # The poll ceiling must clear the old 1h value that clipped large drains, and
+    # stay env-tunable (the workflow raises/lowers it without a code change).
+    from tier3.anthropic_judge import AnthropicBatchJudge, DEFAULT_BATCH_TIMEOUT
+
+    assert DEFAULT_BATCH_TIMEOUT == 14400.0
+    monkeypatch.delenv("TIER3_BATCH_TIMEOUT", raising=False)
+    assert AnthropicBatchJudge(client=object()).timeout_seconds == DEFAULT_BATCH_TIMEOUT
+    monkeypatch.setenv("TIER3_BATCH_TIMEOUT", "600")
+    assert AnthropicBatchJudge(client=object()).timeout_seconds == 600.0

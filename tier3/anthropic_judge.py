@@ -32,6 +32,14 @@ MODEL = "claude-sonnet-4-6"
 # Anthropic rate limits; override with the TIER3_CONCURRENCY env var.
 DEFAULT_CONCURRENCY = 6
 
+# The Message Batches API is asynchronous with a 24h completion target; most
+# batches finish far sooner, but the old 1h ceiling clipped the tail of large
+# backlog drains -- unfinished findings degraded to a provisional TimeoutError
+# stub and had to wait for the next run to be reviewed. 4h comfortably covers a
+# normal drain while still fitting inside a CI job's 6h hard cap. Override with
+# the TIER3_BATCH_TIMEOUT env var (seconds).
+DEFAULT_BATCH_TIMEOUT = 14400.0
+
 SYSTEM_PROMPT = """\
 You are the Tier 3 reviewer in a forensic-accounting detection battery for a \
 small family-owned construction group. Deterministic rules and statistical \
@@ -167,16 +175,17 @@ class AnthropicBatchJudge(AnthropicJudge):
     run instead of trickling through the per-run cap for weeks.
 
     One batch per assess_all call; polled until it ends or `timeout_seconds`
-    passes. Findings whose result isn't back in time degrade to the conservative
-    fallback assessment — which persists as PROVISIONAL, so the next run simply
-    re-reviews them. Nothing is ever lost to a timeout."""
+    passes (default 4h, `TIER3_BATCH_TIMEOUT`). Findings whose result isn't back
+    in time degrade to the conservative fallback assessment — which persists as
+    PROVISIONAL, so the next run simply re-reviews them. Nothing is ever lost to a
+    timeout."""
 
     def __init__(self, client=None, model: str = MODEL, max_tokens: int = 1500,
                  poll_seconds: float = 20.0, timeout_seconds: float | None = None):
         super().__init__(client=client, model=model, max_tokens=max_tokens)
         self.poll_seconds = poll_seconds
         if timeout_seconds is None:
-            timeout_seconds = float(os.environ.get("TIER3_BATCH_TIMEOUT", "3600"))
+            timeout_seconds = float(os.environ.get("TIER3_BATCH_TIMEOUT", DEFAULT_BATCH_TIMEOUT))
         self.timeout_seconds = timeout_seconds
 
     def assess_all(self, packets: list[JudgmentPacket]) -> list[Tier3Assessment]:
