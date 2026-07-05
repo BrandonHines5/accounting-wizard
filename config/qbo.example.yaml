@@ -1,42 +1,40 @@
 # Pull QB reports straight from QuickBooks Online via the Intuit Accounting API,
 # instead of hand-dropping exports (the QBO analog of sharepoint.example.yaml).
-# This file carries NO secrets (only realm ids, which are company identifiers, and
-# env-var NAMES) — so, like sharepoint.example.yaml, it holds the real config and
-# the weekly run copies it to config/qbo.yaml (gitignored) at start. If
+# This file carries NO secrets. Copy it to config/qbo.yaml (gitignored); if
 # config/qbo.yaml is absent at run time, the QBO pull is skipped.
 #
 # WHICH ENTITIES ARE ON QBO
 #   Every entity is on QuickBooks Online EXCEPT Hines Homes and Titan House, which
 #   still export from QB Desktop and land via SharePoint (config/sharepoint.yaml).
-#   An entity is pulled from QBO iff it is listed below. When Hines Homes / Titan
-#   House migrate, add them here and remove them from sharepoint.yaml (an entity
-#   should be sourced from exactly one place). The run pulls each QBO entity's
-#   reports into data/<entity_id>/ before ingest, and the SharePoint pull skips any
-#   entity configured here — so there is no double-pull.
+#   The SharePoint pull skips any entity sourced from QBO, so there is no double-pull.
 #
-# AUTH (OAuth 2.0 — one Intuit app, one connection per company)
-#   Set these as GitHub Actions secrets / environment variables:
-#     QBO_CLIENT_ID / QBO_CLIENT_SECRET   the Intuit app's OAuth client credentials
-#     <refresh_token_env>                 per-company refresh token (named per entity
-#                                         below). Obtain each ONCE via Intuit's
-#                                         authorization-code flow (e.g. the OAuth 2.0
-#                                         Playground) with the
-#                                         com.intuit.quickbooks.accounting scope,
-#                                         then store it as the named secret.
-#   QBO rotates the refresh token (~every 24h). With `--store supabase` the run
-#   persists the rotated token to financial_forensics.qbo_connections
-#   (supabase/migrations/0016_qbo_connections.sql), so the weekly automation keeps
-#   working. Without a store, refresh the secret by hand when it rotates.
-#   The connected app needs READ access only — no write scopes are used.
+# TWO WAYS TO AUTHORIZE A COMPANY
+#
+#   (A) From the review UI  ── recommended, and how you add Hines Homes / Titan
+#       House later ──────────────────────────────────────────────────────────────
+#       Open the review site → Connections (review-ui/app/qbo), click Connect next to
+#       a company, and approve read access in Intuit. The company's realm id and
+#       refresh token are stored in financial_forensics.qbo_connections. With
+#       `--store supabase`, the weekly run reads the realm + token straight from there
+#       — you do NOT need to fill in realm_id or a refresh-token secret below, and an
+#       authorized company is pulled even if it isn't listed here. You only set the
+#       app credentials QBO_CLIENT_ID / QBO_CLIENT_SECRET (see review-ui/README.md for
+#       where to put them on Vercel, and the weekly workflow for GitHub).
+#
+#   (B) Env / OAuth Playground  ── no-Supabase fallback ─────────────────────────────
+#       Obtain each company's refresh token once via Intuit's OAuth Playground and set
+#       it as the named secret, and set realm_id here. Used when running without
+#       `--store supabase`.
 #
 # SETTINGS
 #   environment:   production | sandbox   (default production)
 #   lookback_days: rolling window pulled when --since isn't passed (default 120)
 #
-# Per entity:
-#   realm_id           the QBO company id (not a secret)  — OR realm_id_env to read
-#                      it from an environment variable instead
+# Per entity (all optional under path A):
+#   realm_id           the QBO company id — omit to use the one saved by the UI
+#                      connect flow (or set realm_id_env to read it from an env var)
 #   refresh_token_env  name of the env var holding this company's refresh token
+#                      (path B only; omit under path A)
 #   reports            optional: limit to a subset of the known report stems
 #                      (default: all — qb__vendor_transaction_detail,
 #                      qb__general_ledger, qb__credit_memos, qb__vendor_list)
@@ -44,37 +42,24 @@
 environment: production
 lookback_days: 120
 
+# Entities on QBO. Under path (A) these need no realm_id/refresh_token_env — the UI
+# connection supplies both. Listing them here is optional but keeps the intended set
+# explicit; connecting a company from the UI is enough for it to be pulled.
 entities:
-  hope-filled:
-    realm_id: "REPLACE_WITH_QBO_REALM_ID"
-    refresh_token_env: QBO_REFRESH_TOKEN_HOPE_FILLED
-
-  l2f-ventures:
-    realm_id: "REPLACE_WITH_QBO_REALM_ID"
-    refresh_token_env: QBO_REFRESH_TOKEN_L2F_VENTURES
-
-  blue-tree-realty:
-    realm_id: "REPLACE_WITH_QBO_REALM_ID"
-    refresh_token_env: QBO_REFRESH_TOKEN_BLUE_TREE_REALTY
-
-  stonebrook-poa:
-    realm_id: "REPLACE_WITH_QBO_REALM_ID"
-    refresh_token_env: QBO_REFRESH_TOKEN_STONEBROOK_POA
-
-  mojuva:
-    realm_id: "REPLACE_WITH_QBO_REALM_ID"
-    refresh_token_env: QBO_REFRESH_TOKEN_MOJUVA
-
-  13525wm:
-    realm_id: "REPLACE_WITH_QBO_REALM_ID"
-    refresh_token_env: QBO_REFRESH_TOKEN_13525WM
+  hope-filled: {}
+  l2f-ventures: {}
+  blue-tree-realty: {}
+  stonebrook-poa: {}
+  mojuva: {}
+  13525wm: {}
 
   # --- Not yet on QBO (still QB Desktop → SharePoint; see sharepoint.yaml) --------
-  # When these migrate, uncomment, fill in the realm id + refresh-token secret, and
-  # remove them from config/sharepoint.yaml.
-  # hines-homes:
-  #   realm_id: "REPLACE_WITH_QBO_REALM_ID"
-  #   refresh_token_env: QBO_REFRESH_TOKEN_HINES_HOMES
-  # titan-house:
-  #   realm_id: "REPLACE_WITH_QBO_REALM_ID"
-  #   refresh_token_env: QBO_REFRESH_TOKEN_TITAN_HOUSE
+  # When these migrate, connect them from the review UI's Connections page (or add a
+  # realm_id here) and remove them from config/sharepoint.yaml.
+  # hines-homes: {}
+  # titan-house: {}
+
+  # Example of the env / Playground path (B) for one company:
+  # mojuva:
+  #   realm_id: "1234567890"
+  #   refresh_token_env: QBO_REFRESH_TOKEN_MOJUVA

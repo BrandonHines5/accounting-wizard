@@ -20,6 +20,47 @@ the Supabase URL + anon key are baked in as public-by-design defaults.)
   `set_finding_disposition(fingerprint, disposition, note)` — which run as
   `SECURITY DEFINER`. Setting a disposition feeds the run-over-run learning loop.
 
+## Connect QuickBooks companies (`/qbo`)
+
+The **Connections** page (linked from the dashboard header) authorizes each
+company's QuickBooks Online file with one click — the easy way to onboard a company,
+including Hines Homes and Titan House once they migrate.
+
+Flow (OAuth 2.0 authorization code):
+1. A reviewer clicks **Connect**. `GET /api/qbo/connect?entity=<id>` verifies their
+   Supabase JWT + `is_reviewer()`, then returns Intuit's authorize URL with an
+   HMAC-signed `state` (CSRF + 10-min expiry).
+2. The user approves read access in Intuit, which redirects to
+   `GET /api/qbo/callback?code&state&realmId`. The callback verifies the state,
+   exchanges the code for tokens **server-side**, and upserts
+   `{entity_id, realm_id, refresh_token}` into `financial_forensics.qbo_connections`
+   via the service role. The refresh token never reaches the browser.
+3. The weekly run (`--store supabase`) reads the realm + refresh token straight from
+   that table, so a connected company is pulled with **nothing to copy** — no realm
+   in `config/qbo.yaml`, no per-company refresh-token secret.
+
+**Prerequisites:** apply migrations `0016_qbo_connections.sql` (the table) and
+`0017_qbo_connections_rpc.sql` (the read RPC).
+
+**Intuit redirect URI to register** (Intuit Developer → your app → Keys &
+credentials → Redirect URIs), exactly:
+`https://accounting-wizard.vercel.app/api/qbo/callback`
+
+**Environment variables — set on the Vercel project** (Settings → Environment
+Variables, Production; server-side, do **not** prefix with `NEXT_PUBLIC`):
+
+| Variable | Value |
+|---|---|
+| `QBO_CLIENT_ID` | Intuit app's **Production** Client ID |
+| `QBO_CLIENT_SECRET` | Intuit app's **Production** Client Secret |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key (writes `qbo_connections`) |
+| `QBO_REDIRECT_URI` *(optional)* | pin the callback URL if it differs from the derived `https://<host>/api/qbo/callback` |
+| `QBO_STATE_SECRET` *(optional)* | HMAC key for the `state` param; defaults to `QBO_CLIENT_SECRET` |
+
+`NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` are already set for the
+app. The same `QBO_CLIENT_ID` / `QBO_CLIENT_SECRET` also go in **GitHub Actions
+secrets** for the weekly run (see `.github/workflows/forensics-weekly.yml`).
+
 ## Triage + bulk review
 Each card shows the Tier 3 triage — the AI's false-positive probability and its
 recommended next step (clear / verify / escalate) — persisted by the weekly run.

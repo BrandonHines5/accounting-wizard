@@ -582,16 +582,20 @@ def _realm_id(ent: dict) -> str | None:
 
 def pull_all(config: dict, data_dir: Path | str, registry, *, client: QboClient,
              start: str | None = None, end: str | None = None,
-             entities: set[str] | None = None, on_file=None) -> dict:
+             entities: set[str] | None = None, realm_overrides: dict | None = None,
+             on_file=None) -> dict:
     """Pull every configured, registered, active entity's reports into
     <data-dir>/<entity_id>/.
 
     `entities` optionally scopes the pull to a subset of ids (mirrors --entity).
-    One entity's failure (missing realm/token, API error) is logged and skipped so
-    the others still pull and the run completes. Returns {entity_id: [written
-    files]} for every entity attempted."""
+    `realm_overrides` ({entity_id: realm_id}) supplies a realm for entities without
+    one in config/qbo.yaml — e.g. companies authorized via the review-UI connect flow,
+    whose realm lives in the qbo_connections table. One entity's failure (missing
+    realm/token, API error) is logged and skipped so the others still pull and the
+    run completes. Returns {entity_id: [written files]} for every entity attempted."""
     known = {e.id for e in registry}
     active = {e.id for e in registry.active()}
+    realm_overrides = realm_overrides or {}
     pulled: dict[str, list[str]] = {}
     for entity_id, ent in (config.get("entities") or {}).items():
         if entities is not None and entity_id not in entities:
@@ -602,9 +606,10 @@ def pull_all(config: dict, data_dir: Path | str, registry, *, client: QboClient,
         if entity_id not in active:
             print(f"  - QBO: '{entity_id}' is inactive in the registry — skipped")
             continue
-        realm_id = _realm_id(ent)
+        realm_id = _realm_id(ent) or realm_overrides.get(entity_id)
         if not realm_id:
-            print(f"  ! QBO: no realm_id for '{entity_id}' in config/qbo.yaml — skipped")
+            print(f"  ! QBO: no realm for '{entity_id}' (set realm_id in config/qbo.yaml "
+                  "or authorize it from the review UI) — skipped")
             pulled[entity_id] = []
             continue
         try:
