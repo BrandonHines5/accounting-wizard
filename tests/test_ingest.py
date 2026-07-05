@@ -4,7 +4,28 @@ import pytest
 from core.model import TRANSACTION_COLUMNS
 from ingest.normalize import (apply_group_headers, ensure_unique_source_ids,
                               ingest_data_dir, load_mappings, normalize_frame,
-                              read_report, synthesize_source_ids)
+                              read_report, route_document_number,
+                              synthesize_source_ids)
+
+
+def test_route_document_number_separates_check_and_invoice():
+    # QB's one "Num" column is a check no. on a payment and an invoice no. on a bill;
+    # the mapping feeds it into both fields, so routing must keep only the right one —
+    # otherwise a bill number collides with a real check (false T4-04 "altered check").
+    df = pd.DataFrame([
+        {"txn_type": "bill", "vendor_name": "Affordable Gutters",
+         "check_no": "8108", "invoice_no": "8108"},
+        {"txn_type": "bill_payment", "vendor_name": "Yesenia Rivera",
+         "check_no": "8108", "invoice_no": "8108"},
+        {"txn_type": "journal", "vendor_name": None, "check_no": "J1", "invoice_no": None},
+    ])
+    out = route_document_number(df).reset_index(drop=True)
+    # bill → keep invoice number, drop the (bogus) check number
+    assert pd.isna(out.loc[0, "check_no"]) and out.loc[0, "invoice_no"] == "8108"
+    # payment → keep the check number, drop the (bogus) invoice number
+    assert out.loc[1, "check_no"] == "8108" and pd.isna(out.loc[1, "invoice_no"])
+    # journal → untouched
+    assert out.loc[2, "check_no"] == "J1"
 
 
 def credit_memo_raw(**overrides):

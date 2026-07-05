@@ -189,6 +189,33 @@ def normalize_frame(
     return out
 
 
+# QuickBooks' single "Num" column means different things by transaction type: on a
+# payment it is the CHECK number, on a bill or credit it is the vendor's INVOICE /
+# document number. The vendor_transaction_detail mapping feeds Num into BOTH check_no
+# and invoice_no (it can't know the type per row), so each canonical field must be
+# cleared where it doesn't apply — otherwise a vendor's bill number lands in the
+# check-number space and collides with a real check of the same number, which reads
+# as a CRITICAL T4-04 "altered check". (T1-09 already notes a payment's Num is its
+# check no., not an invoice.)
+_CHECK_NUMBER_TYPES = {"check", "bill_payment", "ach", "wire", "card"}
+_INVOICE_NUMBER_TYPES = {"bill", "credit_memo", "write_off"}
+
+
+def route_document_number(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep a check number only on payments and an invoice/document number only on
+    bills & credits, so the two never conflate. Journals/deposits are left untouched
+    (their Num, where present, is a reference we don't reinterpret)."""
+    if df.empty or "txn_type" not in df.columns:
+        return df
+    df = df.copy()
+    t = df["txn_type"]
+    if "check_no" in df.columns:
+        df.loc[t.isin(_INVOICE_NUMBER_TYPES), "check_no"] = None    # a bill has no check number
+    if "invoice_no" in df.columns:
+        df.loc[t.isin(_CHECK_NUMBER_TYPES), "invoice_no"] = None    # a payment's Num is its check no.
+    return df
+
+
 def clean_transactions(df: pd.DataFrame, label: str = "export") -> pd.DataFrame:
     """Drop QB report noise: subtotal/total/blank rows without a real date+amount."""
     if df.empty:
@@ -322,6 +349,7 @@ def ingest_data_dir(
                 else:
                     frame = normalize_frame(raw, mapping, entity_dir.name, source_system,
                                             TRANSACTION_COLUMNS, label=label)
+                    frame = route_document_number(frame)
                     frame = clean_transactions(frame, label=label)
                     frame = synthesize_source_ids(frame, key)
                     frame["_priority"] = mapping.get("priority", 0)
