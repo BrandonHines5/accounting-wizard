@@ -60,3 +60,12 @@ class SupabaseRefreshTokenStore:
             {"entity_id": entity_id, "realm_id": realm_id,
              "refresh_token": refresh_token, "updated_at": _now_iso()},
             on_conflict="entity_id").execute()
+
+    def list_connections(self) -> dict:
+        """{entity_id: realm_id} for every stored QBO connection (those authorized via
+        the review-UI connect flow). Lets the run discover a company's realm from the
+        connection itself, so a UI-connected entity pulls without a realm in
+        config/qbo.yaml. Never returns the refresh token."""
+        rows = self._table.select("entity_id,realm_id").execute().data or []
+        return {r["entity_id"]: r["realm_id"] for r in rows
+                if r.get("entity_id") and r.get("realm_id")}

@@ -447,6 +447,47 @@ def test_supabase_token_store_prefers_db_then_seeds_and_persists():
     assert empty.upserts[0][1] == "entity_id"
 
 
+def test_supabase_token_store_list_connections():
+    from persistence.qbo_token_store import SupabaseRefreshTokenStore
+
+    table = _FakeSupaTable(rows=[{"entity_id": "hope-filled", "realm_id": "R1"},
+                                 {"entity_id": "mojuva", "realm_id": "R2"},
+                                 {"entity_id": "incomplete", "realm_id": None}])
+    store = SupabaseRefreshTokenStore(_FakeSupaClient(table), _SeedStore())
+    assert store.list_connections() == {"hope-filled": "R1", "mojuva": "R2"}
+
+
+# --------------------------------------------- realm_overrides (UI connections)
+
+def test_pull_all_uses_realm_override_when_config_realm_absent(tmp_path, registry):
+    client = _FakeClient(TXN_REPORT, [])
+    pulled = pull_all({"entities": {"alpha": {}}}, tmp_path, registry, client=client,
+                      realm_overrides={"alpha": "R-DB"})
+    assert pulled["alpha"]                                  # pulled using the DB realm
+
+
+def test_pull_all_config_realm_beats_override(tmp_path, registry):
+    seen = {}
+
+    class _C:
+        def report(self, entity_id, realm_id, name, start=None, end=None, params=None):
+            seen["realm"] = realm_id
+            return TXN_REPORT
+
+        def vendors(self, entity_id, realm_id, page=1000):
+            return []
+
+    pull_all({"entities": {"alpha": {"realm_id": "R-CFG"}}}, tmp_path, registry,
+             client=_C(), realm_overrides={"alpha": "R-DB"})
+    assert seen["realm"] == "R-CFG"                         # explicit config realm wins
+
+
+def test_pull_all_skips_when_no_realm_config_or_override(tmp_path, registry):
+    client = _FakeClient(TXN_REPORT, [])
+    pulled = pull_all({"entities": {"alpha": {}}}, tmp_path, registry, client=client)
+    assert pulled == {"alpha": []}                          # no realm anywhere → skipped
+
+
 # ------------------------------------------------- config + end-to-end normalize
 
 def test_load_qbo_config_absent_returns_none(tmp_path):

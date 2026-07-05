@@ -359,6 +359,7 @@ function Dashboard({ supabase, session }) {
       <header className="bar">
         <h1>Forensics Review</h1>
         <div className="row">
+          <a className="link" href="/qbo">Connections</a>
           <span className="who">{email}</span>
           <button className="link" onClick={() => supabase.auth.signOut()}>Sign out</button>
         </div>

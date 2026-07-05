@@ -72,9 +72,24 @@ def _maybe_pull_qbo(args, registry) -> set:
 
     env_by_entity = {eid: (ent or {}).get("refresh_token_env")
                      for eid, ent in (cfg.get("entities") or {}).items()}
+    realm_overrides: dict = {}
     if args.store == "supabase":
         from persistence.qbo_token_store import SupabaseRefreshTokenStore
         token_store = SupabaseRefreshTokenStore.from_env(args.supabase_schema, env_by_entity)
+        # Companies authorized from the review UI store their realm + refresh token in
+        # qbo_connections. Discover them so a connection is enough to get pulled — no
+        # realm to copy into config/qbo.yaml — and include any not yet listed there.
+        try:
+            realm_overrides = token_store.list_connections()
+        except Exception as exc:  # noqa: BLE001 — fall back to config realms
+            print(f"  ~ QBO: could not read stored connections ({type(exc).__name__}); "
+                  "using config/qbo.yaml realms.")
+        if realm_overrides:
+            merged = dict(cfg.get("entities") or {})
+            for eid in realm_overrides:
+                merged.setdefault(eid, {})
+            cfg = {**cfg, "entities": merged}
+            print(f"  {len(realm_overrides)} QBO connection(s) from the review UI")
     else:
         token_store = EnvRefreshTokenStore(env_by_entity)
 
@@ -89,6 +104,7 @@ def _maybe_pull_qbo(args, registry) -> set:
     print(f"Pulling reports from QuickBooks Online ({start} → {end}) …")
     pulled = pull_all(cfg, args.data_dir, registry, client=client, start=start, end=end,
                       entities=set(args.entity) if args.entity else None,
+                      realm_overrides=realm_overrides,
                       on_file=lambda n, sz: print(f"  ↓ {n} ({sz // 1024} KB)"))
     total = sum(len(v) for v in pulled.values())
     print(f"  Pulled {total} file(s) across {len(pulled)} "
