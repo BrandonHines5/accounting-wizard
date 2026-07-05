@@ -7,4 +7,4 @@ anthropic>=0.69   # Tier 3 AI judgment layer (optional; --tier3 heuristic/off ru
 supabase>=2.0     # Findings history / disposition memory (optional; --store none runs without it)
 pdfplumber>=0.11  # Tier 4 PDF statement extraction (optional; CSV/Excel exports need only pandas)
 msal>=1.28        # SharePoint/Graph: check-image source + export pull (optional)
-requests>=2.31    # SharePoint/Graph HTTP (optional; --pull-sharepoint / --check-image-source graph)
+requests>=2.31    # SharePoint/Graph + QuickBooks Online HTTP (optional; --pull-sharepoint / --pull-qbo / --check-image-source graph)

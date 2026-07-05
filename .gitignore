@@ -47,6 +47,10 @@ config/bank_accounts.yaml
 # The committed template is sharepoint.example.yaml.
 config/sharepoint.yaml
 
+# QuickBooks Online pull config — references realm ids + env-secret names; keep it
+# local. The committed template is qbo.example.yaml.
+config/qbo.yaml
+
 # Python
 __pycache__/
 *.pyc
