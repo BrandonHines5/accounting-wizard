@@ -26,7 +26,9 @@ Design
 - Every network call (token refresh, reports, queries, discovery) goes through
   `_request_with_retry`, which retries transient failures — connection/timeout
   errors and HTTP 429/5xx — with exponential backoff. A bad grant (400/401) is not
-  retried, and one company's exhausted retries are still isolated by `pull_all`.
+  retried, and one company's exhausted retries are still isolated by `pull_all`. On
+  any failure it captures Intuit's `intuit_tid` transaction id from the response
+  headers and logs it, so a failed call can be traced with Intuit support.
 - `QboClient` calls the Reports API (`/v3/company/{realm}/reports/{name}`) and the
   query API (`SELECT … FROM Vendor`) and returns the raw JSON.
 - `flatten_report` turns a report's grouped JSON tree into a flat detail frame,
@@ -104,13 +106,33 @@ def _request_with_retry(do_request, *, label: str, retries: int = DEFAULT_RETRIE
                 raise
             _sleep_backoff(label, attempt, retries, backoff, sleep, reason=type(exc).__name__)
             continue
+        # Intuit returns a per-request transaction id (intuit_tid) in the response
+        # headers; capture it so a failed call can be traced with Intuit support.
+        tid = _intuit_tid(resp)
         if resp.status_code in RETRYABLE_STATUS and not final:
             _sleep_backoff(label, attempt, retries, backoff, sleep,
-                           reason=f"HTTP {resp.status_code}")
+                           reason=_with_tid(f"HTTP {resp.status_code}", tid))
             continue
+        if resp.status_code >= 400:
+            print(f"  ✗ QBO: {label} failed with HTTP {resp.status_code}"
+                  f"{f' [intuit_tid={tid}]' if tid else ''}")
         # 2xx returns; any 4xx/5xx (including a final 429/5xx) raises here.
         resp.raise_for_status()
         return resp
+
+
+def _intuit_tid(resp) -> str | None:
+    """The Intuit transaction id (`intuit_tid`) from a response's headers, or None if
+    absent — logged on failures so a call can be traced with Intuit support."""
+    headers = getattr(resp, "headers", None) or {}
+    try:
+        return headers.get("intuit_tid")
+    except Exception:  # noqa: BLE001 — a non-mapping headers object must never break the call
+        return None
+
+
+def _with_tid(reason: str, tid: str | None) -> str:
+    return f"{reason}, intuit_tid={tid}" if tid else reason
 
 
 def _sleep_backoff(label, attempt, retries, backoff, sleep, *, reason) -> None:

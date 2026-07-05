@@ -146,9 +146,10 @@ def test_flatten_vendors_empty():
 # ---------------------------------------------------------------------- OAuth
 
 class _Resp:
-    def __init__(self, status_code=200, payload=None):
+    def __init__(self, status_code=200, payload=None, headers=None):
         self.status_code = status_code
         self._payload = payload
+        self.headers = headers or {}
 
     def json(self):
         return self._payload
@@ -545,6 +546,33 @@ def test_request_with_retry_exhausts_then_raises_on_persistent_network_error():
 def test_request_with_retry_final_transient_status_raises():
     with pytest.raises(RuntimeError):
         _request_with_retry(lambda: _Resp(503), label="x", retries=1, sleep=lambda s: None)
+
+
+def test_request_with_retry_logs_intuit_tid_on_error(capsys):
+    resp = _Resp(400, headers={"intuit_tid": "tid-abc123"})
+    with pytest.raises(RuntimeError):
+        _request_with_retry(lambda: resp, label="token refresh", retries=0, sleep=lambda s: None)
+    assert "intuit_tid=tid-abc123" in capsys.readouterr().out
+
+
+def test_request_with_retry_includes_intuit_tid_in_retry_reason(capsys):
+    seq = [_Resp(503, headers={"intuit_tid": "tid-1"}), _Resp(200, payload={"ok": 1})]
+    calls = {"n": 0}
+
+    def do():
+        r = seq[calls["n"]]
+        calls["n"] += 1
+        return r
+
+    _request_with_retry(do, label="API request", retries=2, backoff=1.0, sleep=lambda s: None)
+    assert "intuit_tid=tid-1" in capsys.readouterr().out
+
+
+def test_request_with_retry_success_without_tid_is_quiet(capsys):
+    resp = _request_with_retry(lambda: _Resp(200, payload={"ok": 1}), label="x",
+                               retries=1, sleep=lambda s: None)
+    assert resp.status_code == 200
+    assert "intuit_tid" not in capsys.readouterr().out    # nothing logged on a clean success
 
 
 def test_access_token_retries_transient_then_persists():
