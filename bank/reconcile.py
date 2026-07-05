@@ -43,12 +43,26 @@ prefers the amount-consistent book entry, so a number reused across two accounts
 check drawn on an account that hasn't been ingested can't be matched, so every
 operated account must be registered in config/bank_accounts.yaml.
 
+Internal cash-management sweeps — an automatic same-institution movement between
+an entity's operating account and a linked sweep sub-account (a Cash Manager that
+parks balances above a floor overnight to earn interest and returns them the next
+morning) — clear the bank with no third-party book entry by design. Bank lines
+whose description matches a configured `sweep_transfer_patterns` entry
+(config/rules.yaml) are recognized as internal transfers on both sides: matched
+and rolled into ONE INFO note per entity/side rather than raised as a false T4-09
+(unrecorded disbursement) or T4-07 (unexplained inflow). Only NEW money in the
+sweep account (interest income) is a genuine unmatched item, and it lands on the
+sweep account's own statement, not the operating account's. Patterns name no
+account numbers (CLAUDE.md) — the sweep counterpart is matched by the bank's
+generic "Account Ending in NNNN" wording.
+
 Check-image vision reads (T4-03/04/05 payee and endorsement) live in
 bank/check_images.py.
 """
 from __future__ import annotations
 
 import itertools
+import re
 
 import pandas as pd
 
@@ -76,6 +90,50 @@ def _norm_check(value) -> str:
 
 def _payee(value) -> str:
     return value if pd.notna(value) else "a payee"
+
+
+def _compile_sweep_patterns(config: RulesConfig) -> list:
+    """Compile the configured internal-sweep description patterns
+    (config/rules.yaml `sweep_transfer_patterns`). Absent/empty → recognition off."""
+    raw = config.defaults.get("sweep_transfer_patterns") or []
+    return [re.compile(p, re.IGNORECASE) for p in raw]
+
+
+def _is_sweep(description, patterns: list) -> bool:
+    """Whether a bank line is an internal cash-management sweep / linked-account
+    transfer (Cash Manager), matched on the statement description. Such lines clear
+    with no third-party book entry by design, so they must not be flagged as an
+    unrecorded disbursement (T4-09) or unexplained inflow (T4-07)."""
+    if not patterns or description is None or (
+            isinstance(description, float) and pd.isna(description)):
+        return False
+    text = str(description)
+    return any(p.search(text) for p in patterns)
+
+
+def _sweep_note(entity_id: str, side: str, lines: list) -> Finding:
+    """One INFO summary per entity/side for internal sweep transfers recognized on
+    the statement. They net between the entity's own operating and sweep accounts
+    and carry no book entry by design, so they are matched as internal transfers
+    rather than flagged. Reported (not dropped) so the movement stays on the record;
+    verifying each pair — and that only interest income is new money — needs the
+    sweep account's own statement ingested. Disbursement side rolls up under T4-09,
+    deposit side under T4-07 (the rules that would otherwise have flagged them)."""
+    net = sum(float(line["amount"]) for line in lines)
+    gross = sum(abs(float(line["amount"])) for line in lines)
+    dates = sorted(line["date"] for line in lines)
+    rule_id = "T4-09" if side == "disbursement" else "T4-07"
+    return Finding(
+        rule_id, Severity.INFO, [entity_id],
+        question=(f"{len(lines)} internal cash-management sweep transfer(s) on the {side} "
+                  f"side (gross ${gross:,.2f}, net ${net:,.2f}; {dates[0].date()} → "
+                  f"{dates[-1].date()}) were recognized as movements between this entity's "
+                  "operating account and its linked sweep account and matched as internal "
+                  "transfers, not flagged as unrecorded. Ingest the sweep account's statement "
+                  "to reconcile each pair — is only interest income new money there?"),
+        details={"stat_key": f"internal_sweep|{side}", "side": side,
+                 "lines": len(lines), "net": round(net, 2), "gross": round(gross, 2),
+                 "first": str(dates[0].date()), "last": str(dates[-1].date())})
 
 
 def _bank_ref(line) -> str:
@@ -140,6 +198,7 @@ def reconcile(
     gap_days = int(config.param("clearing_gap_days"))
     check_max_days = int(config.param("check_match_max_days"))
     min_critical = float(config.param("bank_min_critical_amount"))
+    sweep_patterns = _compile_sweep_patterns(config)
     active = {e.id for e in registry.active()}
 
     findings: list[Finding] = []
@@ -163,6 +222,7 @@ def reconcile(
 
         matched: set[str] = set()
         out_of_coverage: list = []
+        sweep_lines: list = []
 
         # 1. Check-numbered bank lines → match book checks by number, within the
         # clearing window only: numbers recycle over an account's life, so an
@@ -224,8 +284,13 @@ def reconcile(
                     transactions=[str(book["source_id"])]))
 
         # 2. Non-check bank debits → match book payments (incl. journals) by
-        # amount + date.
+        # amount + date. Internal cash-management sweeps (Cash Manager /
+        # linked-account transfers) clear with no book entry by design, so they
+        # are recognized first and rolled into one INFO note, never a false T4-09.
         for _, line in disb[disb["_check"] == ""].iterrows():
+            if _is_sweep(line["description"], sweep_patterns):
+                sweep_lines.append(line)
+                continue
             cands = books[(~books["source_id"].astype(str).isin(matched))
                           & ((books["_amt"] - line["_amt"]).abs() <= amount_tol)
                           & ((books["date"] - line["date"]).abs().dt.days <= date_tol)]
@@ -271,6 +336,8 @@ def reconcile(
                          "vendor": book["vendor_name"]},
                 transactions=[str(book["source_id"])]))
 
+        if sweep_lines:
+            findings.append(_sweep_note(entity_id, "disbursement", sweep_lines))
         if out_of_coverage:
             findings.append(_coverage_note(entity_id, "disbursement", out_of_coverage))
 
@@ -382,6 +449,7 @@ def reconcile_deposits(
     date_tol = int(config.param("bank_date_tolerance_days"))
     min_critical = float(config.param("bank_min_critical_amount"))
     tol_cents = round(amount_tol * 100)
+    sweep_patterns = _compile_sweep_patterns(config)
     by_id = {e.id: e for e in registry}
     active = {e.id for e in registry.active()}
 
@@ -446,6 +514,7 @@ def reconcile_deposits(
         lo = win_lo - pd.Timedelta(days=date_tol)
         hi = win_hi + pd.Timedelta(days=date_tol)
         out_of_coverage: list = []
+        sweep_lines: list = []
         for ridx, rec in rec_rows:
             if ridx not in matched_rec and (pd.notna(rec["date"]) and lo <= rec["date"] <= hi):
                 rec = rec.copy()
@@ -454,6 +523,11 @@ def reconcile_deposits(
         for didx, dep in dep_rows:
             if didx in matched_dep:
                 continue
+            # A sweep-back credit from the linked sweep account is an internal
+            # transfer, not an unexplained inflow — recognize it before flagging.
+            if _is_sweep(dep["description"], sweep_patterns):
+                sweep_lines.append(dep)
+                continue
             if not _in_books_coverage(dep["date"], books_win,
                                       lead_days=date_tol, tail_days=date_tol):
                 out_of_coverage.append(dep)
@@ -461,6 +535,8 @@ def reconcile_deposits(
             dep = dep.copy()
             dep["_amt"] = abs(float(dep["amount"]))
             findings.append(_unrecorded_deposit(entity_id, dep, nonprofit, min_critical))
+        if sweep_lines:
+            findings.append(_sweep_note(entity_id, "deposit", sweep_lines))
         if out_of_coverage:
             findings.append(_coverage_note(entity_id, "deposit", out_of_coverage))
 

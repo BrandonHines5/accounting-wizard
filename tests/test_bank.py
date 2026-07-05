@@ -338,6 +338,57 @@ def test_journal_entry_matches_non_check_debit(registry, config):
     assert by_rule(findings, "T4-09") == []   # the wire is explained by the journal
 
 
+def _sweep_bank(registry) -> pd.DataFrame:
+    # Cash Manager sweep: nightly transfer out of the operating account into the
+    # linked sweep account (…4520) and the sweep-back credit. Both clear with no
+    # book entry — they must be recognized as internal transfers, not flagged.
+    rows = [
+        (-107273.94, "2026-04-29", "Trnsfr to Account Ending in 4520", ""),
+        (-249320.89, "2026-05-21", "Trnsfr to Account Ending in 4520", ""),
+        (160276.82, "2026-05-19", "Trnsfr from Account Ending in 4520", ""),
+    ]
+    df = pd.DataFrame(rows, columns=["amount", "date", "description", "check_no"])
+    df["entity_id"] = "alpha"
+    df["account_fingerprint"] = "acct-hash-1"
+    return validate_bank_transactions(df, {e.id for e in registry})
+
+
+def test_sweep_transfers_not_flagged_as_unrecorded_disbursement(registry, config):
+    # The sweep-out debits carry no book entry by design; recognized as internal
+    # cash-management sweeps, they must NOT each raise a CRITICAL T4-09.
+    bank = pd.concat([_bank(registry), _sweep_bank(registry)], ignore_index=True)
+    findings = reconcile(_books(), bank, registry, config)
+    crit_sweeps = [f for f in by_rule(findings, "T4-09")
+                   if str(f.severity) == "CRITICAL"
+                   and "4520" in (f.details.get("description") or "")]
+    assert crit_sweeps == []                       # no per-line CRITICALs for the sweep
+    note = [f for f in by_rule(findings, "T4-09") if f.details.get("stat_key")]
+    assert len(note) == 1 and str(note[0].severity) == "INFO"
+    assert note[0].details["stat_key"] == "internal_sweep|disbursement"
+    assert note[0].details["lines"] == 2           # two sweep-out debits summarized
+    # the genuine unmatched non-check debit (the planted wire) still fires
+    assert any(f.details.get("amount") == 2500.0 for f in by_rule(findings, "T4-09"))
+
+
+def test_sweep_note_absent_when_no_sweep_lines(findings):
+    # Nothing in the base scenario matches a sweep pattern, so no INFO sweep note.
+    assert not [f for f in findings if f.details.get("stat_key", "").startswith("internal_sweep")]
+
+
+def test_sweep_back_credit_not_flagged_as_unrecorded_inflow(registry, config):
+    # An entity WITH book receipts: the sweep-back credit must be recognized as an
+    # internal transfer, not raised as a T4-07 unexplained inflow.
+    books = _dep_books([("R1", "alpha", "deposit", "2026-05-05", 2000.00)])
+    bank = _dep_bank(registry, [
+        ("alpha", 2000.00, "2026-05-07", "MOBILE DEPOSIT"),               # matches R1
+        ("alpha", 160276.82, "2026-05-19", "Trnsfr from Account Ending in 4520"),
+    ])
+    findings = reconcile_deposits(books, bank, registry, config)
+    assert not [f for f in findings if f.details.get("amount") == 160276.82]
+    note = [f for f in findings if f.details.get("stat_key") == "internal_sweep|deposit"]
+    assert len(note) == 1 and str(note[0].severity) == "INFO" and note[0].rule_id == "T4-07"
+
+
 def test_validate_rejects_unknown_entity(registry):
     bad = pd.DataFrame([{"entity_id": "ghost", "account_fingerprint": "x",
                          "date": "2026-05-01", "amount": -10.0}])
