@@ -32,11 +32,72 @@ from rules.engine import RunContext, run_all
 from tier3 import HeuristicJudge, apply_tier3, build_packets, select_for_review
 
 
-def _maybe_pull_sharepoint(args, registry, mappings) -> None:
+def _qbo_window(cfg, since, until):
+    """Report date window: --since/--until when given, else a rolling lookback so a
+    weekly run pulls a comfortably-overlapping window (default 120 days)."""
+    from datetime import date, timedelta
+
+    end = until or date.today().isoformat()
+    if since:
+        return since, end
+    lookback = int((cfg or {}).get("lookback_days", 120))
+    return (date.today() - timedelta(days=lookback)).isoformat(), end
+
+
+def _maybe_pull_qbo(args, registry) -> set:
+    """Pull configured entities' reports straight from QuickBooks Online into the
+    data dir before ingest, writing the same data/<entity_id>/qb__*.csv files the
+    export path drops. Returns the set of entity ids sourced from QBO so the
+    SharePoint pull skips them — each entity is pulled from exactly one place.
+
+    Skips cleanly when not set up (no config or missing QBO_* creds) unless
+    `--pull-qbo on` demanded it, so a local run needs no extra flags."""
+    if args.pull_qbo == "off":
+        return set()
+    from ingest.qbo import (QBO_ENV, EnvRefreshTokenStore, QboAuth, QboClient,
+                            api_base, load_qbo_config, pull_all)
+
+    cfg = load_qbo_config(args.qbo_config)
+    if cfg is None:
+        if args.pull_qbo == "on":
+            raise SystemExit(f"--pull-qbo on needs {args.qbo_config} "
+                             "(copy config/qbo.example.yaml)")
+        return set()
+    missing = [v for v in QBO_ENV if not os.environ.get(v)]  # unset OR empty
+    if missing:
+        if args.pull_qbo == "on":
+            raise SystemExit(f"--pull-qbo on needs env: {', '.join(missing)}")
+        print(f"  QBO pull skipped (missing {', '.join(missing)}).")
+        return set()
+
+    env_by_entity = {eid: (ent or {}).get("refresh_token_env")
+                     for eid, ent in (cfg.get("entities") or {}).items()}
+    if args.store == "supabase":
+        from persistence.qbo_token_store import SupabaseRefreshTokenStore
+        token_store = SupabaseRefreshTokenStore.from_env(args.supabase_schema, env_by_entity)
+    else:
+        token_store = EnvRefreshTokenStore(env_by_entity)
+
+    auth = QboAuth(os.environ["QBO_CLIENT_ID"], os.environ["QBO_CLIENT_SECRET"], token_store)
+    client = QboClient(auth, base_url=api_base(cfg))
+    start, end = _qbo_window(cfg, args.since, args.until)
+    print(f"Pulling reports from QuickBooks Online ({start} → {end}) …")
+    pulled = pull_all(cfg, args.data_dir, registry, client=client, start=start, end=end,
+                      entities=set(args.entity) if args.entity else None,
+                      on_file=lambda n, sz: print(f"  ↓ {n} ({sz // 1024} KB)"))
+    total = sum(len(v) for v in pulled.values())
+    print(f"  Pulled {total} file(s) across {len(pulled)} "
+          f"entit{'y' if len(pulled) == 1 else 'ies'} from QBO")
+    return set(pulled)
+
+
+def _maybe_pull_sharepoint(args, registry, mappings, skip_entities=None) -> None:
     """Download configured SharePoint folders into the data dir before ingest.
 
-    Skips cleanly when not set up (no config or missing GRAPH_* env) unless
-    `--pull-sharepoint on` demanded it, so a local run needs no extra flags."""
+    `skip_entities` (those already pulled from QBO) are excluded so an entity is
+    sourced from exactly one place. Skips cleanly when not set up (no config or
+    missing GRAPH_* env) unless `--pull-sharepoint on` demanded it, so a local run
+    needs no extra flags."""
     if args.pull_sharepoint == "off":
         return
     from ingest.sharepoint import GRAPH_ENV, load_sharepoint_config, pull_all
@@ -47,6 +108,12 @@ def _maybe_pull_sharepoint(args, registry, mappings) -> None:
             raise SystemExit(f"--pull-sharepoint on needs {args.sharepoint_config} "
                              "(copy config/sharepoint.example.yaml)")
         return
+    if skip_entities:
+        # Any entity already pulled from QBO is dropped from the SharePoint folder
+        # pull so its data dir isn't populated from two sources (bank-statement pulls
+        # below are driven by bank_accounts.yaml and are unaffected).
+        cfg = {**cfg, "entities": {eid: e for eid, e in (cfg.get("entities") or {}).items()
+                                   if eid not in skip_entities}}
     has_drive = bool(cfg.get("drive_id") or os.environ.get("GRAPH_DRIVE_ID"))
     missing = [v for v in GRAPH_ENV if not os.environ.get(v)]  # unset OR empty
     if missing or not has_drive:
@@ -348,6 +415,16 @@ def main() -> None:
     parser.add_argument("--sharepoint-config",
                         default=str(REPO_ROOT / "config" / "sharepoint.yaml"),
                         help="SharePoint pull config (see config/sharepoint.example.yaml).")
+    parser.add_argument("--pull-qbo", choices=["auto", "on", "off"], default="off",
+                        help="Pull reports straight from QuickBooks Online via the "
+                             "Intuit API into the data dir before ingest (needs "
+                             "config/qbo.yaml + QBO_CLIENT_ID/QBO_CLIENT_SECRET + each "
+                             "entity's refresh-token secret). auto: pull if the config "
+                             "and app creds are present, else skip; on: require them. "
+                             "Entities pulled from QBO are skipped by the SharePoint pull.")
+    parser.add_argument("--qbo-config",
+                        default=str(REPO_ROOT / "config" / "qbo.yaml"),
+                        help="QuickBooks Online pull config (see config/qbo.example.yaml).")
     parser.add_argument("--entity", action="append", default=None,
                         help="Limit to specific entity id(s); default = all active")
     parser.add_argument("--since", default=None,
@@ -401,7 +478,11 @@ def main() -> None:
 
     data_dir = Path(args.data_dir)
     mappings = load_mappings()
-    _maybe_pull_sharepoint(args, registry, mappings)
+    # Pull QBO entities straight from the Intuit API, then SharePoint for the rest
+    # (Hines Homes, Titan House). QBO-sourced entities are skipped by the SharePoint
+    # pull so each entity's data dir comes from exactly one source.
+    qbo_ids = _maybe_pull_qbo(args, registry)
+    _maybe_pull_sharepoint(args, registry, mappings, skip_entities=qbo_ids)
     if not data_dir.exists():
         raise SystemExit(f"Data dir {data_dir} not found — drop weekly exports there first "
                          "(see skill/SKILL.md).")

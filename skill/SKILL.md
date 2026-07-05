@@ -37,6 +37,26 @@ needs `Files.Read.All`, admin-consented) — copy `config/sharepoint.example.yam
 to `config/sharepoint.yaml` and map each entity to its folder. `auto` pulls when
 both the config and creds are present, else skips.
 
+**Optional — pull straight from QuickBooks Online** (`--pull-qbo on`): every entity
+except Hines Homes and Titan House is on QBO. For those, the run pulls the reports
+straight from the Intuit Accounting API (`ingest/qbo.py`) into `data/<entity_id>/`
+as the same `qb__*.csv` files the export path drops — so the detection code is
+unchanged. It renders each API report into a CSV using the QBO-export column labels
+`config/source_mappings.yaml` already expects (mapping the stable Intuit `ColKey` to
+those labels), and forward-fills grouped sections (e.g. the GL account) into a named
+column. Reports pulled: `TransactionList` (feeds vendor money-movement +
+credit-memo mappings), `GeneralLedger` (journals), and a `Vendor` query (vendor
+master). OAuth 2.0, one Intuit app, one connection per company: copy
+`config/qbo.example.yaml` to `config/qbo.yaml`, set each entity's `realm_id` +
+`refresh_token_env`, and provide `QBO_CLIENT_ID`/`QBO_CLIENT_SECRET` plus each
+company's refresh-token secret. QBO rotates the refresh token (~daily); with
+`--store supabase` the run persists the rotation to
+`financial_forensics.qbo_connections` so the weekly automation keeps working.
+Entities pulled from QBO are skipped by the SharePoint pull (each entity is sourced
+from exactly one place), and the report date window follows `--since/--until` or the
+config's `lookback_days` (default 120). `auto` pulls when the config and app creds
+are present, else skips.
+
 ## Run
 
 ```bash

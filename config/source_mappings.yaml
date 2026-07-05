@@ -3,7 +3,7 @@
 # and worksheet.
 #
 # Hines Homes and Titan House export from QuickBooks DESKTOP; the other six
-# entities export from QuickBooks ONLINE, whose reports label the same field
+# entities are on QuickBooks ONLINE, whose reports label the same field
 # differently ("Date" vs "Transaction date", "Memo" vs "Description", a real
 # "Distribution account" column vs a forward-filled section row, etc.). So each
 # canonical field maps to EITHER a single "Header" OR a [list, of, candidate,
@@ -11,6 +11,14 @@
 # serves both platforms. The GL candidates below are verified against a real QBO
 # export; the other QBO candidates are best-effort and confirmed by running (the
 # ingest logs the actual columns/types of anything it can't map).
+#
+# The QBO entities are now pulled straight from the Intuit Accounting API
+# (ingest/qbo.py) rather than hand-exported. That connector renders each API report
+# into a CSV using these SAME QBO-export column labels (it maps the stable Intuit
+# `ColKey` to the labels below), so this one mapping still serves QBO — whether a
+# file arrived by API pull or manual export — with no change. QB Desktop (Hines
+# Homes, Titan House) still exports the grouped Excel layout, hence the Desktop
+# candidates remain.
 #
 # kind:           transactions (default) | vendors | cost_lines
 # priority:       when the same QB Trans # appears in several reports, rows

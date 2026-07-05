@@ -112,7 +112,12 @@ Each run diffs against history. Dispositioned findings never resurface.
 
 ### Phase 3 — Post-QBO automation
 
-- Nightly scheduled pull via QBO REST API (Vercel cron) → Supabase
+- **Scheduled pull via QBO REST API → Supabase — implemented** (`ingest/qbo.py`,
+  `--pull-qbo on`). Every entity except Hines Homes and Titan House is on QBO and is
+  pulled straight from the Intuit Accounting API into the same `qb__*.csv` shape the
+  export path used, so the detection battery is unchanged. Runs on the existing
+  weekly GitHub Actions schedule (a Vercel cron can call the same entry point later);
+  rotated OAuth refresh tokens persist to `financial_forensics.qbo_connections`.
 - Adaptive API integration if available; otherwise keep export
 - Buildertrend replaced by project-manager app → direct DB access to POs/invoices
 - Review UI as a route group in the CRM (role-gated: Brandon + Kelly only),

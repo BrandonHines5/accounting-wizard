@@ -15,24 +15,25 @@
 # recognized exports (qb__*.xlsx etc., per config/source_mappings.yaml) from the
 # folder into <data-dir>/<entity_id>/ (gitignored) before ingest; non-matching
 # files in the folder are ignored.
+#
+# QBO MIGRATION: every entity is now on QuickBooks Online EXCEPT Hines Homes and
+# Titan House, which still export from QB Desktop into these SharePoint folders. The
+# QBO entities are pulled straight from the Intuit API instead (config/qbo.yaml) —
+# so only the two export-driven entities remain here. The run pulls each entity from
+# exactly one source: any entity listed in config/qbo.yaml is skipped by this
+# SharePoint pull, so leaving a migrated entity here is harmless, but keeping the
+# list accurate avoids confusion. Move an entity's block down here again only if it
+# ever reverts to Desktop exports.
 
 # Optional: pin the drive here instead of using the GRAPH_DRIVE_ID env var.
 # drive_id: "b!Kv2tTTJjPEqgMXqpSKNxtdcDVhgjxyZLnYRkvv5zRe8i8N3TIksIRq2Eok36Cns0"
 
 entities:
+  # Still on QB Desktop → exports land in these SharePoint folders.
   hines-homes:
     folder: "Personal Folders/Brandon/Claude Code/acct-wizard/HinesHomes"
   titan-house:
     folder: "Personal Folders/Brandon/Claude Code/acct-wizard/TitanHouse"
-  l2f-ventures:
-    folder: "Personal Folders/Brandon/Claude Code/acct-wizard/L2FVentures"
-  mojuva:
-    folder: "Personal Folders/Brandon/Claude Code/acct-wizard/Mojuva"
-  stonebrook-poa:
-    folder: "Personal Folders/Brandon/Claude Code/acct-wizard/StonebrookPOA"
-  13525wm:
-    folder: "Personal Folders/Brandon/Claude Code/acct-wizard/13525WM"
-  hope-filled:
-    folder: "Personal Folders/Brandon/Claude Code/acct-wizard/HopeFilledHomes"
-  blue-tree-realty:
-    folder: "Personal Folders/Brandon/Claude Code/acct-wizard/BlueTreeRealty"
+
+  # --- Migrated to QuickBooks Online → pulled via config/qbo.yaml, not here -------
+  # hope-filled, l2f-ventures, blue-tree-realty, stonebrook-poa, mojuva, 13525wm

@@ -7,6 +7,15 @@ name: Weekly forensics run
 # One-time setup — add these as repository secrets
 # (Settings → Secrets and variables → Actions → New repository secret):
 #   GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET, GRAPH_DRIVE_ID
+#                                (SharePoint pull for the QB Desktop entities —
+#                                 Hines Homes, Titan House)
+#   QBO_CLIENT_ID, QBO_CLIENT_SECRET
+#                                (Intuit app credentials for the QuickBooks Online
+#                                 pull — every entity except Hines Homes/Titan House)
+#   QBO_REFRESH_TOKEN_*          (one per QBO company, named in config/qbo.yaml:
+#                                 QBO_REFRESH_TOKEN_HOPE_FILLED, _L2F_VENTURES,
+#                                 _BLUE_TREE_REALTY, _STONEBROOK_POA, _MOJUVA,
+#                                 _13525WM. Rotations are persisted to Supabase.)
 #   SUPABASE_URL, SUPABASE_SERVICE_KEY
 #   ANTHROPIC_API_KEY            (optional — enables the Tier 3 AI review)
 #   HINES_HOMES_OPERATING_ACCT   (Tier 4 — First Service Bank operating account
@@ -44,8 +53,9 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Configure SharePoint pull + Tier 4 accounts
+      - name: Configure QBO + SharePoint pull + Tier 4 accounts
         run: |
+          cp config/qbo.example.yaml config/qbo.yaml
           cp config/sharepoint.example.yaml config/sharepoint.yaml
           cp config/bank_accounts.example.yaml config/bank_accounts.yaml
       - name: Pull exports + run the detection battery
@@ -54,6 +64,15 @@ jobs:
           GRAPH_CLIENT_ID: ${{ secrets.GRAPH_CLIENT_ID }}
           GRAPH_CLIENT_SECRET: ${{ secrets.GRAPH_CLIENT_SECRET }}
           GRAPH_DRIVE_ID: ${{ secrets.GRAPH_DRIVE_ID }}
+          # QuickBooks Online — app creds + one refresh token per QBO company
+          QBO_CLIENT_ID: ${{ secrets.QBO_CLIENT_ID }}
+          QBO_CLIENT_SECRET: ${{ secrets.QBO_CLIENT_SECRET }}
+          QBO_REFRESH_TOKEN_HOPE_FILLED: ${{ secrets.QBO_REFRESH_TOKEN_HOPE_FILLED }}
+          QBO_REFRESH_TOKEN_L2F_VENTURES: ${{ secrets.QBO_REFRESH_TOKEN_L2F_VENTURES }}
+          QBO_REFRESH_TOKEN_BLUE_TREE_REALTY: ${{ secrets.QBO_REFRESH_TOKEN_BLUE_TREE_REALTY }}
+          QBO_REFRESH_TOKEN_STONEBROOK_POA: ${{ secrets.QBO_REFRESH_TOKEN_STONEBROOK_POA }}
+          QBO_REFRESH_TOKEN_MOJUVA: ${{ secrets.QBO_REFRESH_TOKEN_MOJUVA }}
+          QBO_REFRESH_TOKEN_13525WM: ${{ secrets.QBO_REFRESH_TOKEN_13525WM }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -61,7 +80,7 @@ jobs:
           HINES_HOMES_OZK_ACCT: ${{ secrets.HINES_HOMES_OZK_ACCT }}
           # batch mode exists to drain a backlog in one run — lift the per-run cap
           TIER3_MAX_REVIEW: ${{ github.event.inputs.tier3 == 'batch' && '0' || '200' }}
-        run: python -u -m skill.run --pull-sharepoint on --store supabase --tier3 ${{ github.event.inputs.tier3 || 'auto' }}
+        run: python -u -m skill.run --pull-qbo on --pull-sharepoint on --store supabase --tier3 ${{ github.event.inputs.tier3 || 'auto' }}
       - name: Attach exceptions workbook
         if: always()
         uses: actions/upload-artifact@v4
