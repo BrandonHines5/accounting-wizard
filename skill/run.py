@@ -55,7 +55,7 @@ def _maybe_pull_qbo(args, registry) -> set:
     if args.pull_qbo == "off":
         return set()
     from ingest.qbo import (QBO_ENV, EnvRefreshTokenStore, QboAuth, QboClient,
-                            api_base, load_qbo_config, pull_all)
+                            api_base, load_qbo_config, pull_all, resolve_token_endpoint)
 
     cfg = load_qbo_config(args.qbo_config)
     if cfg is None:
@@ -78,7 +78,12 @@ def _maybe_pull_qbo(args, registry) -> set:
     else:
         token_store = EnvRefreshTokenStore(env_by_entity)
 
-    auth = QboAuth(os.environ["QBO_CLIENT_ID"], os.environ["QBO_CLIENT_SECRET"], token_store)
+    # Resolve the OAuth token endpoint from Intuit's discovery document (falls back
+    # to the documented URL if discovery is unreachable) rather than hard-coding it.
+    environment = (cfg.get("environment") or "production")
+    token_endpoint = resolve_token_endpoint(environment)
+    auth = QboAuth(os.environ["QBO_CLIENT_ID"], os.environ["QBO_CLIENT_SECRET"], token_store,
+                   token_endpoint=token_endpoint)
     client = QboClient(auth, base_url=api_base(cfg))
     start, end = _qbo_window(cfg, args.since, args.until)
     print(f"Pulling reports from QuickBooks Online ({start} → {end}) …")

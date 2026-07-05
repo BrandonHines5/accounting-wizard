@@ -19,7 +19,14 @@ Design
   (OAuth 2.0 client-credentials-over-refresh-token). QBO rotates the refresh token
   roughly every 24h; whenever the token endpoint returns a new one, it is handed to
   the injected `token_store` so a stateless weekly run persists it (see
-  `persistence/qbo_token_store.py`) and doesn't break within a day.
+  `persistence/qbo_token_store.py`) and doesn't break within a day. The token
+  endpoint itself is resolved from Intuit's OpenID discovery document
+  (`resolve_token_endpoint`), not trusted as a hard-coded URL — with the documented
+  URL kept only as a fallback if discovery is unreachable.
+- Every network call (token refresh, reports, queries, discovery) goes through
+  `_request_with_retry`, which retries transient failures — connection/timeout
+  errors and HTTP 429/5xx — with exponential backoff. A bad grant (400/401) is not
+  retried, and one company's exhausted retries are still isolated by `pull_all`.
 - `QboClient` calls the Reports API (`/v3/company/{realm}/reports/{name}`) and the
   query API (`SELECT … FROM Vendor`) and returns the raw JSON.
 - `flatten_report` turns a report's grouped JSON tree into a flat detail frame,
@@ -45,6 +52,7 @@ no write scopes are used.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Protocol
 
@@ -55,16 +63,92 @@ from core.entities import REPO_ROOT
 
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "qbo.yaml"
 
+# Intuit's OpenID discovery document lists the current OAuth endpoints (token,
+# authorization, revoke). We resolve the token endpoint from it at runtime rather
+# than trusting a hard-coded URL forever; the constant below is only the fallback
+# used if the document can't be fetched.
+DISCOVERY_URL = "https://developer.api.intuit.com/.well-known/openid_configuration"
+DISCOVERY_SANDBOX_URL = "https://developer.api.intuit.com/.well-known/openid_sandbox_configuration"
 # OAuth token endpoint is environment-independent (sandbox and production share it);
-# only the API base URL differs.
+# only the API base URL differs. Fallback if discovery is unreachable.
 TOKEN_ENDPOINT = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 PROD_API_BASE = "https://quickbooks.api.intuit.com"
 SANDBOX_API_BASE = "https://sandbox-quickbooks.api.intuit.com"
 # Minor version pins the Accounting API response shape; bump deliberately.
 MINOR_VERSION = "70"
 
+# Transient failures worth retrying (rate limiting + gateway/server hiccups). A
+# 400 (invalid_grant) or 401 is NOT retried — retrying can't fix bad credentials.
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+DEFAULT_RETRIES = 3          # retries AFTER the first attempt
+DEFAULT_BACKOFF = 1.0        # base seconds, doubled each retry (1s, 2s, 4s)
+
 # Global app-credential env vars (per-entity refresh tokens are named in the config).
 QBO_ENV = ("QBO_CLIENT_ID", "QBO_CLIENT_SECRET")
+
+
+def _request_with_retry(do_request, *, label: str, retries: int = DEFAULT_RETRIES,
+                        backoff: float = DEFAULT_BACKOFF, sleep=time.sleep):
+    """Run do_request() (returns a requests.Response), retrying transient failures —
+    connection/timeout errors and HTTP 429/5xx — with exponential backoff.
+
+    A non-transient HTTP error (e.g. 400 invalid_grant, 401 unauthorized) raises
+    immediately via raise_for_status; the last transient failure raises after the
+    final attempt. `sleep` is injectable so tests don't actually wait."""
+    for attempt in range(retries + 1):
+        final = attempt == retries
+        try:
+            resp = do_request()
+        except Exception as exc:  # noqa: BLE001 — network/timeout error: retry a few times
+            if final:
+                raise
+            _sleep_backoff(label, attempt, retries, backoff, sleep, reason=type(exc).__name__)
+            continue
+        if resp.status_code in RETRYABLE_STATUS and not final:
+            _sleep_backoff(label, attempt, retries, backoff, sleep,
+                           reason=f"HTTP {resp.status_code}")
+            continue
+        # 2xx returns; any 4xx/5xx (including a final 429/5xx) raises here.
+        resp.raise_for_status()
+        return resp
+
+
+def _sleep_backoff(label, attempt, retries, backoff, sleep, *, reason) -> None:
+    delay = backoff * (2 ** attempt)
+    print(f"  ~ QBO: {label} transient failure ({reason}); retry "
+          f"{attempt + 1}/{retries} in {delay:.0f}s")
+    sleep(delay)
+
+
+def discovery_document(environment: str = "production", *, session=None,
+                       retries: int = DEFAULT_RETRIES, backoff: float = DEFAULT_BACKOFF,
+                       sleep=time.sleep) -> dict:
+    """Fetch Intuit's OpenID discovery document for the environment (production or
+    sandbox) and return it. Retries transient failures like every other call."""
+    url = DISCOVERY_SANDBOX_URL if str(environment).lower() == "sandbox" else DISCOVERY_URL
+    if session is None:
+        import requests  # lazy: optional dependency
+        session = requests.Session()
+    resp = _request_with_retry(
+        lambda: session.get(url, headers={"Accept": "application/json"}, timeout=30),
+        label="discovery document", retries=retries, backoff=backoff, sleep=sleep)
+    return resp.json()
+
+
+def resolve_token_endpoint(environment: str = "production", *, session=None,
+                           fallback: str = TOKEN_ENDPOINT, **kwargs) -> str:
+    """The token endpoint from Intuit's discovery document, falling back to the
+    documented default if the document can't be reached — so a discovery hiccup
+    degrades to the known-good URL instead of failing the run."""
+    try:
+        endpoint = discovery_document(environment, session=session, **kwargs).get("token_endpoint")
+        if endpoint:
+            return endpoint
+        print("  ~ QBO: discovery document had no token_endpoint; using the documented default.")
+    except Exception as exc:  # noqa: BLE001 — a discovery outage must not block the pull
+        print(f"  ~ QBO: could not read the discovery document ({type(exc).__name__}); "
+              "using the documented token endpoint.")
+    return fallback
 
 # Stable Intuit report ColKey -> the QBO-export column label the mapping expects
 # (config/source_mappings.yaml). Keyed on ColKey because it is stable across
@@ -190,11 +274,16 @@ class QboAuth:
     per entity, not once per report."""
 
     def __init__(self, client_id: str, client_secret: str, token_store: RefreshTokenStore,
-                 *, session=None, token_endpoint: str = TOKEN_ENDPOINT) -> None:
+                 *, session=None, token_endpoint: str = TOKEN_ENDPOINT,
+                 retries: int = DEFAULT_RETRIES, backoff: float = DEFAULT_BACKOFF,
+                 sleep=time.sleep) -> None:
         self.client_id = client_id
         self.client_secret = client_secret
         self.token_store = token_store
         self.token_endpoint = token_endpoint
+        self.retries = retries
+        self.backoff = backoff
+        self._sleep = sleep
         self._session = session
         self._access_cache: dict[str, str] = {}
 
@@ -209,14 +298,17 @@ class QboAuth:
         if not force and entity_id in self._access_cache:
             return self._access_cache[entity_id]
         refresh = self.token_store.get(entity_id)
-        resp = self.session.post(
-            self.token_endpoint,
-            data={"grant_type": "refresh_token", "refresh_token": refresh},
-            auth=(self.client_id, self.client_secret),
-            headers={"Accept": "application/json"},
-            timeout=30,
-        )
-        resp.raise_for_status()
+        # Retry transient failures (rate limits / gateway errors) with backoff; a bad
+        # grant (400/401) raises on the first attempt — retrying can't fix it.
+        resp = _request_with_retry(
+            lambda: self.session.post(
+                self.token_endpoint,
+                data={"grant_type": "refresh_token", "refresh_token": refresh},
+                auth=(self.client_id, self.client_secret),
+                headers={"Accept": "application/json"},
+                timeout=30),
+            label="token refresh", retries=self.retries, backoff=self.backoff,
+            sleep=self._sleep)
         payload = resp.json()
         rotated = payload.get("refresh_token")
         if rotated and rotated != refresh:
@@ -235,10 +327,14 @@ class QboClient:
     for testing. `report`/`query` return the raw parsed JSON."""
 
     def __init__(self, auth: QboAuth, *, base_url: str = PROD_API_BASE, session=None,
-                 minor_version: str = MINOR_VERSION) -> None:
+                 minor_version: str = MINOR_VERSION, retries: int = DEFAULT_RETRIES,
+                 backoff: float = DEFAULT_BACKOFF, sleep=time.sleep) -> None:
         self.auth = auth
         self.base_url = base_url.rstrip("/")
         self.minor_version = minor_version
+        self.retries = retries
+        self.backoff = backoff
+        self._sleep = sleep
         self._session = session
 
     @property
@@ -250,11 +346,12 @@ class QboClient:
 
     def _get(self, entity_id: str, realm_id: str, url: str, params: dict) -> dict:
         token = self.auth.access_token(entity_id, realm_id)
-        resp = self.session.get(
-            url, params=params,
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-            timeout=60)
-        resp.raise_for_status()
+        resp = _request_with_retry(
+            lambda: self.session.get(
+                url, params=params,
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                timeout=60),
+            label="API request", retries=self.retries, backoff=self.backoff, sleep=self._sleep)
         return resp.json()
 
     def report(self, entity_id: str, realm_id: str, name: str, *, start: str | None = None,
