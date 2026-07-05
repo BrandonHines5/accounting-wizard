@@ -10,7 +10,13 @@ Disbursement side (`reconcile`):
 - T4-04 — same check number, cleared amount ≠ recorded amount (CRITICAL).
 - T4-06 — recorded-to-cleared gap beyond the window (MEDIUM, kiting/holding).
 - T4-09 — a non-check bank debit (ACH/wire/card) with no matching book entry
-  (CRITICAL).
+  (CRITICAL). Two benign classes are recognized and rolled into INFO notes instead:
+  internal cash-management sweeps (see below), and payment-processor fees — a
+  QuickBooks Payments / Intuit style fee that the processor debits per settlement
+  (1% capped $15/txn bank, 3.5%+$0.30/txn card). A fee is recognized only when its
+  description tags a configured processor + fee and its amount is within the expected
+  band vs the processor's own gross deposits; a larger "fee" (refund/chargeback/
+  funding reversal) is left to flag.
 
 Deposit side (`reconcile_deposits`):
 - T4-07 — recorded receipt with no matching bank deposit (CRITICAL, short/missing);
@@ -136,6 +142,40 @@ def _sweep_note(entity_id: str, side: str, lines: list) -> Finding:
                  "first": str(dates[0].date()), "last": str(dates[-1].date())})
 
 
+def _compile(config: RulesConfig, key: str) -> list:
+    """Compile a config list of case-insensitive regexes (empty when absent)."""
+    return [re.compile(p, re.IGNORECASE) for p in (config.defaults.get(key) or [])]
+
+
+def _matches_all(description, *groups: list) -> bool:
+    """True when the description matches at least one pattern in EVERY group — e.g.
+    a processor tag AND a fee/deposit kind. Empty groups → False (feature off)."""
+    if not all(groups) or description is None or (
+            isinstance(description, float) and pd.isna(description)):
+        return False
+    text = str(description)
+    return all(any(p.search(text) for p in group) for group in groups)
+
+
+def _merchant_fee_note(entity_id: str, lines: list) -> Finding:
+    """One INFO summary per entity for payment-processor fee debits recognized and
+    reconciled against the processor's gross deposits (QuickBooks Payments / Intuit:
+    1% capped $15/txn bank, 3.5%+$0.30/txn card). Reported, not dropped, so the fees
+    stay on the record; anything above the expected fee band (a material refund /
+    chargeback / funding reversal) is NOT recognized here and still flags."""
+    total = sum(abs(float(line["amount"])) for line in lines)
+    dates = sorted(line["date"] for line in lines)
+    return Finding(
+        "T4-09", Severity.INFO, [entity_id],
+        question=(f"{len(lines)} payment-processor fee debit(s) totaling ${total:,.2f} "
+                  f"({dates[0].date()} → {dates[-1].date()}) were recognized as merchant "
+                  "card/ACH processing fees and reconciled against the processor's gross "
+                  "deposits at the expected rate, not flagged as unrecorded disbursements. "
+                  "Do these match the payments received?"),
+        details={"stat_key": "merchant_fees", "lines": len(lines), "total": round(total, 2),
+                 "first": str(dates[0].date()), "last": str(dates[-1].date())})
+
+
 def _bank_ref(line) -> str:
     """Stable natural key for a bank line, so a finding with no book source_id
     (an unmatched bank line) gets a unique, reproducible fingerprint instead of
@@ -199,6 +239,16 @@ def reconcile(
     check_max_days = int(config.param("check_match_max_days"))
     min_critical = float(config.param("bank_min_critical_amount"))
     sweep_patterns = _compile_sweep_patterns(config)
+    # Merchant card/ACH processing fees (QuickBooks Payments / Intuit): a fee debit is
+    # recognized when its description tags a processor AND a fee, and its amount is
+    # within the expected band vs the processor's gross deposits in the window.
+    proc_pat = _compile(config, "merchant_processor_patterns")
+    fee_pat = _compile(config, "merchant_fee_desc_patterns")
+    dep_pat = _compile(config, "merchant_deposit_desc_patterns")
+    fee_flat = float(config.defaults.get("merchant_fee_max_flat", 0) or 0)
+    fee_rate = float(config.defaults.get("merchant_fee_max_rate", 0) or 0)
+    fee_window = int(config.defaults.get("merchant_fee_window_days", 0) or 0)
+    merchant_on = bool(proc_pat and fee_pat)
     active = {e.id for e in registry.active()}
 
     findings: list[Finding] = []
@@ -223,6 +273,12 @@ def reconcile(
         matched: set[str] = set()
         out_of_coverage: list = []
         sweep_lines: list = []
+        merchant_fee_lines: list = []
+        # The processor's own gross deposits (client payments) for this entity — a
+        # recognized fee must be within the expected rate of the deposits it settles.
+        proc_deposits = (bank[(bank["entity_id"] == entity_id) & (bank["amount"] > 0)
+                              & bank["description"].map(lambda d: _matches_all(d, proc_pat, dep_pat))]
+                         if merchant_on else bank.iloc[0:0])
 
         # 1. Check-numbered bank lines → match book checks by number, within the
         # clearing window only: numbers recycle over an account's life, so an
@@ -291,6 +347,18 @@ def reconcile(
             if _is_sweep(line["description"], sweep_patterns):
                 sweep_lines.append(line)
                 continue
+            # Payment-processor fee (QuickBooks Payments / Intuit): the processor
+            # debits its fee separately on every settlement. Recognize it when the
+            # description tags a processor fee AND the amount is within the expected
+            # band vs the processor's gross deposits in the window (1% capped $15/txn
+            # bank, 3.5%+$0.30/txn card) — a larger "fee" (refund/chargeback) is left
+            # to flag normally.
+            if merchant_on and _matches_all(line["description"], proc_pat, fee_pat):
+                near = proc_deposits[(proc_deposits["date"] - line["date"]).abs().dt.days
+                                     <= fee_window]["amount"].sum()
+                if line["_amt"] <= max(fee_flat, fee_rate * float(near)) + amount_tol:
+                    merchant_fee_lines.append(line)
+                    continue
             cands = books[(~books["source_id"].astype(str).isin(matched))
                           & ((books["_amt"] - line["_amt"]).abs() <= amount_tol)
                           & ((books["date"] - line["date"]).abs().dt.days <= date_tol)]
@@ -338,6 +406,8 @@ def reconcile(
 
         if sweep_lines:
             findings.append(_sweep_note(entity_id, "disbursement", sweep_lines))
+        if merchant_fee_lines:
+            findings.append(_merchant_fee_note(entity_id, merchant_fee_lines))
         if out_of_coverage:
             findings.append(_coverage_note(entity_id, "disbursement", out_of_coverage))
 
