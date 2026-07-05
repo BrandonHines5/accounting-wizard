@@ -417,6 +417,45 @@ def test_merchant_fees_recognized_material_debit_still_flagged(registry, config)
     assert big and str(big[0].severity) == "CRITICAL"
 
 
+def test_returned_payment_recognized_as_info(registry, config):
+    # A client payment (Intuit deposit) later reversed by the processor (PYMT SOLN
+    # debit of the same amount) is a returned payment — INFO, not CRITICAL — and it
+    # matches the STRICTLY-prior original deposit, not the same-day re-collection.
+    rows = [
+        (7000.00, "2026-05-05", "INTUIT 111 DEPOSIT MERCHTESTACCT", ""),          # original
+        (-7000.00, "2026-05-09", "INTUIT PYMT SOLN INTUITPMTS MERCHTESTACCT", ""),  # returned
+        (7000.00, "2026-05-09", "INTUIT 222 DEPOSIT MERCHTESTACCT", ""),          # re-collection (same day)
+    ]
+    df = pd.DataFrame(rows, columns=["amount", "date", "description", "check_no"])
+    df["entity_id"] = "alpha"
+    df["account_fingerprint"] = "acct-hash-1"
+    bank = pd.concat([_bank(registry), validate_bank_transactions(
+        df, {e.id for e in registry})], ignore_index=True)
+    findings = reconcile(_books(), bank, registry, config)
+    ret = [f for f in by_rule(findings, "T4-09") if f.details.get("returned_payment")]
+    assert len(ret) == 1 and str(ret[0].severity) == "INFO"
+    assert ret[0].details["amount"] == 7000.0
+    assert ret[0].details["matched_deposit_date"] == "2026-05-05"   # prior original, not same-day
+    # never emitted as a CRITICAL unrecorded disbursement
+    assert not [f for f in by_rule(findings, "T4-09")
+                if f.details.get("amount") == 7000.0 and str(f.severity) == "CRITICAL"]
+
+
+def test_processor_debit_without_matching_deposit_still_flags(registry, config):
+    # A processor debit with no prior same-amount deposit (a funding reversal / Bill
+    # Pay) is NOT a recognized return — it still flags CRITICAL for review.
+    odd = pd.DataFrame([(-8100.00, "2026-05-14", "INTUIT PYMT SOLN INTUITPMTS MERCHTESTACCT", "")],
+                       columns=["amount", "date", "description", "check_no"])
+    odd["entity_id"] = "alpha"
+    odd["account_fingerprint"] = "acct-hash-1"
+    bank = pd.concat([_bank(registry), validate_bank_transactions(
+        odd, {e.id for e in registry})], ignore_index=True)
+    findings = reconcile(_books(), bank, registry, config)
+    flagged = [f for f in by_rule(findings, "T4-09") if f.details.get("amount") == 8100.0]
+    assert flagged and str(flagged[0].severity) == "CRITICAL"
+    assert not flagged[0].details.get("returned_payment")
+
+
 def test_oversized_processor_fee_is_not_auto_recognized(registry, config):
     # A "TRAN FEE" far above the expected band (no gross deposit to justify it) must
     # NOT be silently cleared — it falls through to a normal T4-09.
