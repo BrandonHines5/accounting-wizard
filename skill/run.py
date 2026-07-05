@@ -19,6 +19,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+from bank.auto_resolve import auto_resolve_bank_verified
 from core.config import RulesConfig
 from core.entities import REPO_ROOT, EntityRegistry
 from core.model import validate_cost_lines, validate_transactions, validate_vendors
@@ -240,16 +241,17 @@ def _make_judge(mode: str, model: str | None):
     return judge
 
 
-def _run_tier4(args, registry, config, transactions, known_ids: set[str]) -> list:
+def _run_tier4(args, registry, config, transactions, known_ids: set[str]):
     """Extract configured bank statements and reconcile them against the books.
 
-    Skips cleanly (returning []) when Tier 4 isn't set up — no account registry,
-    no statements directory, or nothing matching the window — so a Tier-1-only run
-    needs no extra flags. Findings are merged into the main list and reviewed like
-    any other."""
+    Returns (findings, bank, account_labels). Skips cleanly (returning
+    ([], None, None)) when Tier 4 isn't set up — no account registry, no statements
+    directory, or nothing matching the window — so a Tier-1-only run needs no extra
+    flags. Findings are merged into the main list and reviewed like any other; the
+    returned bank frame + labels feed bank-verified auto-resolution."""
     accounts_path = Path(args.bank_accounts)
     if not accounts_path.exists():
-        return []
+        return [], None, None
     from bank.accounts import account_label_map, extract_statements, load_bank_accounts
     from bank.reconcile import reconcile_all
 
@@ -257,12 +259,12 @@ def _run_tier4(args, registry, config, transactions, known_ids: set[str]) -> lis
     if args.entity:
         accounts = [a for a in accounts if a.entity_id in set(args.entity)]
     if not accounts:
-        return []
+        return [], None, None
 
     bank_dir = Path(args.bank_dir) if args.bank_dir else Path(args.data_dir) / "bank"
     if not bank_dir.exists():
         print(f"  Tier 4 skipped (no bank statements dir at {bank_dir}).")
-        return []
+        return [], None, None
 
     bank = extract_statements(
         accounts, bank_dir, known_ids,
@@ -273,7 +275,7 @@ def _run_tier4(args, registry, config, transactions, known_ids: set[str]) -> lis
         bank = bank[bank["date"] <= args.until]
     if bank.empty:
         print("  Tier 4 skipped (no bank statement lines matched the window).")
-        return []
+        return [], None, None
 
     print(f"  Tier 4: reconciling {len(bank)} bank lines across "
           f"{bank['entity_id'].nunique()} account-entities …")
@@ -288,7 +290,7 @@ def _run_tier4(args, registry, config, transactions, known_ids: set[str]) -> lis
     findings += _run_check_images(args, registry, config, bank, transactions, accounts, bank_dir)
     if args.store == "supabase":
         _persist_bank(bank, args.supabase_schema)
-    return findings
+    return findings, bank, account_labels
 
 
 def _make_check_reader(mode: str, model: str | None):
@@ -563,7 +565,9 @@ def main() -> None:
     findings = run_all(ctx)
     print(f"  {len(findings)} Tier 1–2 rule findings")
 
-    findings += _run_tier4(args, registry, config, transactions, known_ids)
+    tier4_findings, bank, account_labels = _run_tier4(
+        args, registry, config, transactions, known_ids)
+    findings += tier4_findings
 
     entities_by_id = {e.id: e for e in registry}
 
@@ -578,6 +582,22 @@ def main() -> None:
         if suppressed:
             print(f"  {len(suppressed)} suppressed by disposition memory "
                   f"(previously resolved); {len(findings)} active")
+
+    # Bank-verified auto-resolution: a low-dollar duplicate (T1-01/T1-02) whose two
+    # payments Tier 4 confirms cleared as distinct debits spaced like recurring
+    # bills is dispositioned `legit` with the evidence attached and pulled off the
+    # active list — resolved, not silently dropped (it lands on the workbook's
+    # "Auto-resolved" sheet and stays in history). Runs after disposition memory
+    # (so a human decision already took effect) and before Tier 3 (so resolved
+    # findings aren't reviewed). No-op unless Tier 4 ran and the feature is enabled.
+    auto_resolved: list = []
+    if bank is not None:
+        findings, auto_resolved = auto_resolve_bank_verified(
+            findings, transactions, bank, config,
+            account_labels=account_labels, prior=prior)
+        if auto_resolved:
+            print(f"  {len(auto_resolved)} auto-resolved (bank-verified low-dollar "
+                  f"duplicates); {len(findings)} active")
 
     judge = _make_judge(args.tier3, args.tier3_model)
     reviewed: list = []
@@ -611,6 +631,13 @@ def main() -> None:
         # next run recognizes them as already-reviewed and skips them.
         if reviewed:
             store.persist_assessments(reviewed)
+        # Record the bank-verified auto-resolutions in history: insert the rows,
+        # then stamp their `legit` disposition (guarded to still-open rows, so a
+        # human call is never overwritten). Keeps them out of next week's queue and
+        # visible in the review UI as resolved-by-automation.
+        if auto_resolved:
+            store.save(auto_resolved)
+            store.persist_auto_dispositions(auto_resolved)
 
     if args.update_baselines and args.store == "supabase":
         from analytics.baselines import vendor_share_baselines
@@ -622,7 +649,7 @@ def main() -> None:
     output = args.output or str(
         REPO_ROOT / "output" / f"exceptions_{datetime.now():%Y%m%d_%H%M}.xlsx")
     path = write_workbook(findings, registry, output, suppressed=suppressed,
-                          prior=prior)
+                          auto_resolved=auto_resolved, prior=prior)
     print(f"Workbook written: {path}")
 
 

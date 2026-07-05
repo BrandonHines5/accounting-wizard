@@ -101,6 +101,19 @@ never committing them), only reads + path references are kept. Tier 4 findings
 flow through the same disposition memory, Tier 3 review, and workbook as every
 other finding.
 
+**Bank-verified auto-resolution** (`bank/auto_resolve.py`): once Tier 4 has run,
+a low-dollar duplicate-payment finding (T1-01/T1-02) is auto-resolved when the
+bank independently confirms it is two legitimate recurring payments — every
+involved payment cleared as its own distinct debit, spaced like recurring bills,
+at or below `auto_resolve_max_amount`. It is dispositioned `legit` with the bank
+evidence attached and moved to the workbook's **Auto-resolved (verified)** sheet
+(and, with `--store supabase`, stamped `auto:bank-verified` in history, guarded to
+still-open rows). This is not a silent drop (CLAUDE.md: never silently drop a
+CRITICAL) — it stays visible and reversible, keeping the review list to the items
+that genuinely need eyes. Fraud-signal rules are never eligible; anything the
+evidence can't confirm (e.g. the covering statement not ingested yet) stays on the
+list. Set `auto_resolve_max_amount: 0` in `config/rules.yaml` to disable it.
+
 ## Standing principles (apply to every run)
 
 1. **Independent source matching** — fraud lives in the gaps between systems

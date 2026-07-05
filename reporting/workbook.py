@@ -61,9 +61,11 @@ def write_workbook(
     output_path: Path | str,
     run_label: str | None = None,
     suppressed: list[Finding] | None = None,
+    auto_resolved: list[Finding] | None = None,
     prior: pd.DataFrame | None = None,
 ) -> Path:
     suppressed = suppressed or []
+    auto_resolved = auto_resolved or []
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     run_label = run_label or datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -103,6 +105,13 @@ def write_workbook(
         if suppressed:
             findings_frame(suppressed).to_excel(
                 writer, sheet_name="Dispositioned", index=False)
+        # Bank-verified auto-resolutions (T1-01/T1-02 low-dollar duplicates Tier 4
+        # confirmed as recurring payments). Listed here, resolved — never silently
+        # dropped. Only added when there's something to show, so the default
+        # workbook shape (and its test) is unchanged.
+        if auto_resolved:
+            findings_frame(auto_resolved).to_excel(
+                writer, sheet_name="Auto-resolved (verified)", index=False)
         # Per-rule precision from history: the tuning feedback loop. Only added
         # when there IS history, so the default workbook shape is unchanged.
         precision = rule_precision_frame(prior)
@@ -115,6 +124,7 @@ def write_workbook(
              "Total findings": len(findings),
              "Tier 3 reviewed": f"{tier3_reviewed} of {len(findings)}",
              "Suppressed (disposition memory)": len(suppressed),
+             "Auto-resolved (bank-verified)": len(auto_resolved),
              "Reminder": "Findings are verification questions, not accusations. "
                          "Disposition each one: legit / error_corrected / escalated."}
         ]).to_excel(writer, sheet_name="Run Info", index=False)

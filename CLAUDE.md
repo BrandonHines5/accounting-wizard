@@ -26,7 +26,13 @@ every rule (IDs T1-xx … T4-xx). Rule IDs are stable; never renumber.
 - Check/statement images: store reads + SharePoint path references in Supabase,
   never the images, never raw bank account numbers (hash fingerprints only).
 - Tier 3 may downgrade severity with stated reasoning but never silently drops a
-  CRITICAL finding.
+  CRITICAL finding. Bank-verified auto-resolution (`bank/auto_resolve.py`) may
+  resolve a low-dollar duplicate (T1-01/T1-02) when Tier 4 independently confirms
+  it — but that is a disposition *with evidence and an audit trail*, not a silent
+  drop: the finding stays visible (workbook "Auto-resolved (verified)" sheet,
+  `legit` in history, `dispositioned_by = auto:bank-verified`) and reversible. Auto-resolution
+  is evidence-gated, never a dollar-threshold suppressor, and never applies to
+  fraud-signal rules.
 - Findings are phrased as verification questions, not accusations.
 - Any vendor bank-detail change is CRITICAL until callback-verified — no exceptions.
 - Misallocation involving any nonprofit entity (`legal_type: nonprofit_501c3` in
