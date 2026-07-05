@@ -75,6 +75,29 @@ defaults:
   # Tier 4 check-image vision reads (T4-03/04/05)
   check_image_min_confidence: 90   # read confidence (0–100) below this → human review queue
 
+  # Tier 4 (T4-07/T4-09): internal cash-management sweep / linked-account transfers.
+  # A "sweep" is an automatic same-institution movement between an entity's own
+  # operating account and a linked sweep sub-account (e.g. a Cash Manager that
+  # parks balances above a floor overnight to earn interest and returns them the
+  # next morning). These clear the bank as transfer debits and credits but by
+  # design carry NO third-party book entry — the bookkeeper doesn't journal each
+  # nightly sweep — so without recognition every sweep-out is a false T4-09
+  # (unrecorded disbursement) and every sweep-back a false T4-07 (unexplained
+  # inflow). A line whose description matches any pattern below is treated as an
+  # internal transfer: matched, rolled into one INFO note per entity/side, and
+  # never raised as an exception. Only NEW money in the sweep account (interest
+  # income) is a genuine unmatched item, and it lands on the sweep account's own
+  # statement, not the operating account's.
+  #
+  # Patterns are case-insensitive regexes matched against the statement
+  # description. They name NO account numbers (CLAUDE.md: raw/partial account
+  # numbers never enter the repo) — the "Account Ending in NNNN" phrasing is
+  # matched generically, and only the bank's specific sweep wording (not generic
+  # "online transfer" lines, which are discretionary and stay reviewable) is
+  # listed. Empty list = sweep recognition off.
+  sweep_transfer_patterns:
+    - 'trnsfr (to|from) account ending in \d{3,}'   # First Service Bank Cash Manager sweep
+
   # Tier 2 statistical checks
   round_number_base: 100           # T2-02: "round" = an exact multiple of this dollar amount
   round_number_min_count: 12       # T2-02: min payments before the round ratio is meaningful

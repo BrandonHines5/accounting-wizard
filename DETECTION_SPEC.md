@@ -114,6 +114,19 @@ numbers recycle over an account's life. Unmatched lines below
 `bank_min_critical_amount` surface as INFO. The deposit side is skipped (with an
 INFO ingest-gap note) for an entity whose books contain no receipt transactions.
 
+**Internal cash-management sweeps.** An automatic same-institution movement
+between an entity's operating account and a linked sweep sub-account (a Cash
+Manager that parks balances above a floor overnight to earn interest and returns
+them) clears the bank with no third-party book entry by design. Bank lines whose
+description matches a configured `sweep_transfer_patterns` entry (`config/rules.yaml`)
+are recognized as internal transfers on both the disbursement (T4-09) and deposit
+(T4-07) sides — matched and rolled into ONE INFO note per entity/side instead of a
+false CRITICAL. Only NEW money in the sweep account (interest income) is a genuine
+unmatched item, and it lands on the sweep account's own statement. Patterns name no
+account numbers (CLAUDE.md) — the counterpart is matched by the bank's generic
+"Account Ending in NNNN" wording; full pair-level verification requires ingesting
+the sweep account's statement so each transfer matches its mirror.
+
 | ID | Check | Logic | Severity |
 |---|---|---|---|
 | T4-01 | Statement extraction | Parse statement register: date, description, amount, check no. | — (pipeline) |
@@ -124,7 +137,7 @@ INFO ingest-gap note) for an entity whose books contain no receipt transactions.
 | T4-06 | Clearing-gap analysis | Recorded-date vs. cleared-date outliers (kiting/holding indicators) | MEDIUM |
 | T4-07 | Deposit-side match | Client payments / donations recorded in QB ↔ bank deposits; short or missing deposits | CRITICAL |
 | T4-08 | Nonprofit donation reconciliation | Donation acknowledgments/pledges vs. actual deposits — runs for every nonprofit entity in the registry (currently Hope Filled Homes) | CRITICAL |
-| T4-09 | Non-check disbursement sweep | Every ACH, wire, debit-card bank line matched to a book entry | CRITICAL if unmatched |
+| T4-09 | Non-check disbursement sweep | Every ACH, wire, debit-card bank line matched to a book entry; recognized internal cash-management sweeps (`sweep_transfer_patterns`) are matched as internal transfers, not flagged | CRITICAL if unmatched |
 
 **Image handling:** confidence score per read; < 90% confidence → human review queue.
 Images stay in SharePoint (restricted); Supabase stores reads + path reference only.
