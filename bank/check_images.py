@@ -106,13 +106,16 @@ def verify_check_images(
     fetch_front: Callable[[str], bytes],
     fetch_back: Callable[[pd.Series], bytes | None] | None = None,
     media_type: str = "image/jpeg",
+    register_label: str | None = None,
 ) -> tuple[pd.DataFrame, list[Finding]]:
     """Read every cancelled-check image and compare it to the books.
 
     Returns the bank frame enriched with payee_read/amount_read/read_confidence,
     plus the T4-03/04/05 findings. `fetch_front(image_ref) -> bytes` pulls the
     image (e.g. from SharePoint); `fetch_back(row) -> bytes | None` optionally
-    supplies the endorsement side for the rows you choose to inspect."""
+    supplies the endorsement side for the rows you choose to inspect.
+    `register_label` names the account these images belong to (e.g. '…0452', 'Ozk')
+    so each finding tells the reviewer which register to search."""
     amount_tol = float(config.param("bank_amount_tolerance"))
     min_conf = float(config.param("check_image_min_confidence"))
     active = {e.id for e in registry.active()}
@@ -130,7 +133,8 @@ def verify_check_images(
         bank.at[idx, "amount_read"] = read.amount
         bank.at[idx, "read_confidence"] = read.confidence
 
-        findings.extend(_review_one(row, read, transactions, amount_tol, min_conf))
+        findings.extend(_review_one(row, read, transactions, amount_tol, min_conf,
+                                    register_label))
 
     findings.sort(key=lambda f: (-int(f.severity), f.rule_id))
     return bank, findings
@@ -151,12 +155,24 @@ def _book_check(transactions: pd.DataFrame, entity_id: str, check_no: str):
     return None if same.empty else same.iloc[0]
 
 
-def _review_one(row, read: CheckRead, transactions, amount_tol, min_conf) -> list[Finding]:
+def _reg_detail(label: str | None) -> dict:
+    """The `register` detail (a to_row() workbook column) when a label is known."""
+    return {"register": label} if label else {}
+
+
+def _reg_tag(label: str | None) -> str:
+    """Inline register tag appended to a finding's question for at-a-glance reading."""
+    return f" [Register: {label}]" if label else ""
+
+
+def _review_one(row, read: CheckRead, transactions, amount_tol, min_conf,
+                register_label: str | None = None) -> list[Finding]:
     entity_id = row["entity_id"]
     check_no = _norm_check(row["check_no"])
     book = _book_check(transactions, entity_id, check_no)
     refs = [str(book["source_id"])] if book is not None else []
     cleared = str(row["date"].date()) if pd.notna(row.get("date")) else None
+    reg, tag = _reg_detail(register_label), _reg_tag(register_label)
     out: list[Finding] = []
 
     # Unreadable image → review queue, never a false assertion of (mis)match.
@@ -165,9 +181,10 @@ def _review_one(row, read: CheckRead, transactions, amount_tol, min_conf) -> lis
             "T4-03", Severity.MEDIUM, [entity_id],
             question=(f"Check #{check_no}'s image could not be read confidently "
                       f"(confidence {read.confidence:.0f}% < {min_conf:.0f}%). Pull the image "
-                      "and confirm the payee and amount manually."),
+                      "and confirm the payee and amount manually." + tag),
             details={"check_no": check_no, "read_confidence": float(read.confidence),
-                     "image_review": "low_confidence", "bank_ref": _bank_ref(row), "cleared_date": cleared},
+                     "image_review": "low_confidence", "bank_ref": _bank_ref(row),
+                     "cleared_date": cleared, **reg},
             transactions=refs))
         return out
 
@@ -176,19 +193,22 @@ def _review_one(row, read: CheckRead, transactions, amount_tol, min_conf) -> lis
             out.append(Finding(
                 "T4-03", Severity.CRITICAL, [entity_id],
                 question=(f"Check #{check_no} is payable to '{read.payee}' on the image but the "
-                          f"books record vendor '{book['vendor_name']}'. Who was actually paid?"),
+                          f"books record vendor '{book['vendor_name']}'. Who was actually paid?"
+                          + tag),
                 details={"check_no": check_no, "read_payee": read.payee,
-                         "recorded_vendor": book["vendor_name"], "bank_ref": _bank_ref(row), "cleared_date": cleared},
+                         "recorded_vendor": book["vendor_name"], "bank_ref": _bank_ref(row),
+                         "cleared_date": cleared, **reg},
                 transactions=refs))
         recorded = abs(float(book["amount"]))
         if read.amount is not None and abs(float(read.amount) - recorded) > amount_tol:
             out.append(Finding(
                 "T4-04", Severity.CRITICAL, [entity_id],
                 question=(f"Check #{check_no} reads ${float(read.amount):,.2f} on the image but the "
-                          f"books record ${recorded:,.2f}. Was the check altered after signing?"),
+                          f"books record ${recorded:,.2f}. Was the check altered after signing?"
+                          + tag),
                 details={"check_no": check_no, "read_amount": float(read.amount),
                          "recorded": recorded, "source": "check_image",
-                         "bank_ref": _bank_ref(row), "cleared_date": cleared},
+                         "bank_ref": _bank_ref(row), "cleared_date": cleared, **reg},
                 transactions=refs))
 
     if read.endorsement_flags:
@@ -196,10 +216,10 @@ def _review_one(row, read: CheckRead, transactions, amount_tol, min_conf) -> lis
             "T4-05", Severity.HIGH, [entity_id],
             question=(f"Check #{check_no}'s endorsement looks irregular "
                       f"({', '.join(read.endorsement_flags)}). Confirm who deposited it "
-                      "and that the endorsement is authorized."),
+                      "and that the endorsement is authorized." + tag),
             details={"check_no": check_no, "endorsement": read.endorsement,
                      "endorsement_flags": list(read.endorsement_flags),
-                     "bank_ref": _bank_ref(row), "cleared_date": cleared},
+                     "bank_ref": _bank_ref(row), "cleared_date": cleared, **reg},
             transactions=refs))
     return out
 

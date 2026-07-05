@@ -14,6 +14,7 @@ reported and skipped, never allowed to sink the whole weekly run.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -23,8 +24,20 @@ import yaml
 
 from bank.model import empty_bank_transactions
 from bank.statement_extract import extract_export, extract_pdf
+from core.fingerprint import account_fingerprint
 
 ErrorHandler = Callable[[Path, Exception], None]
+
+
+def _masked_last4(account_number: str) -> str:
+    """A display mask of the account number — its last four digits, e.g. '…0452'.
+    NOT the raw number (CLAUDE.md forbids storing that); the owner asked for the
+    last four on findings so a reviewer knows which register to search. Falls back
+    to whatever digits exist, or 'account' when there are none."""
+    digits = re.sub(r"\D", "", str(account_number))
+    if len(digits) >= 4:
+        return f"…{digits[-4:]}"
+    return digits or "account"
 
 
 @dataclass(frozen=True)
@@ -33,6 +46,11 @@ class BankAccount:
     label: str
     account_number_env: str
     statement_glob: str
+    # Human-readable register name shown on findings so a reviewer knows which
+    # account's register to search. Optional: defaults to the masked last-4 of the
+    # account number (config `display_label` overrides — e.g. 'Ozk' for a second
+    # account whose number is awkward to cite). Never the raw number.
+    display_label: str | None = None
     fmt: str = "csv"                          # csv | xlsx | pdf
     # For pdf statements with no ruled table lines (e.g. First Service Bank), the
     # per-bank positional parser to use — a key in statement_extract.PDF_LAYOUTS.
@@ -57,6 +75,15 @@ class BankAccount:
                 f"{self.account_number_env} (the raw number is never committed).")
         return number
 
+    def register_label(self, account_number: str | None = None) -> str:
+        """The register name to show on this account's findings: the configured
+        `display_label`, else the masked last-4 of the number. Pass `account_number`
+        to avoid re-reading the secret when the caller already has it."""
+        if self.display_label:
+            return self.display_label
+        number = account_number if account_number is not None else self.account_number()
+        return _masked_last4(number)
+
 
 def load_bank_accounts(path: str | Path) -> list[BankAccount]:
     """Parse config/bank_accounts.yaml into BankAccount entries."""
@@ -67,6 +94,7 @@ def load_bank_accounts(path: str | Path) -> list[BankAccount]:
             label=item.get("label", "account"),
             account_number_env=item["account_number_env"],
             statement_glob=item["statement_glob"],
+            display_label=item.get("display_label") or None,
             fmt=str(item.get("format", "csv")).lower(),
             layout=item.get("layout") or None,
             sharepoint_folder=item.get("sharepoint_folder") or None,
@@ -126,3 +154,26 @@ def extract_statements(
               for a in accounts]
     frames = [f for f in frames if len(f)]
     return pd.concat(frames, ignore_index=True) if frames else empty_bank_transactions()
+
+
+def account_label_map(
+    accounts: list[BankAccount],
+    *,
+    salt: str | None = None,
+    on_error: ErrorHandler | None = None,
+) -> dict[str, str]:
+    """Map each account's fingerprint to its register label (config `display_label`,
+    else masked last-4), so reconciliation can name the register on a finding from
+    the fingerprint alone. An account whose number secret is unset is skipped — a
+    missing register label must never sink the reconciliation run. Uses the same
+    salt as extraction so the fingerprints line up with the bank rows."""
+    labels: dict[str, str] = {}
+    for account in accounts:
+        try:
+            number = account.account_number()
+        except Exception as exc:  # noqa: BLE001 — missing/rotated secret for one account
+            if on_error is not None:
+                on_error(Path(account.statement_glob), exc)
+            continue
+        labels[account_fingerprint(number, salt=salt)] = account.register_label(number)
+    return labels

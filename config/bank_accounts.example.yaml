@@ -30,6 +30,10 @@ accounts:
     layout: first_service_bank
     statement_glob: "hines-homes/operating/*.pdf"
     account_number_env: HINES_HOMES_OPERATING_ACCT
+    # `display_label` names the register on this account's findings so a reviewer
+    # knows which register to search. Omitted → the run derives the masked last-4
+    # of the account number at runtime (e.g. '…0452'); set it to override with a
+    # friendlier name. Never put a raw account number here.
     sharepoint_folder: "Personal Folders/Brandon/Claude Code/acct-wizard/HinesHomes/FirstServiceStatements"
     # Cancelled-check images are embedded in the First Service Bank statement PDF
     # itself ("Images: 92"). `source: statement_pdf` renders each check face out of
@@ -53,6 +57,7 @@ accounts:
   #     folder below to auto-pull). Confirm the real folder path.
   - entity_id: hines-homes
     label: ozk
+    display_label: Ozk        # register name shown on this account's findings
     format: xlsx
     statement_glob: "hines-homes/ozk/*.xlsx"
     account_number_env: HINES_HOMES_OZK_ACCT

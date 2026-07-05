@@ -179,17 +179,18 @@ def _returned_payment_finding(entity_id: str, debit, deposit) -> Finding:
     the reviewer confirms the reversal at a glance instead of re-triaging a CRITICAL.
     `deposit` is the matched {date, amt} record."""
     amt = abs(float(debit["amount"]))
+    reg = _register_of(debit)
     return Finding(
         "T4-09", Severity.INFO, [entity_id],
         question=(f"A payment-processor debit of ${amt:,.2f} on {debit['date'].date()} reverses "
                   f"a matching processor deposit received {deposit['date'].date()} — a returned/"
                   "reversed customer payment, not an unrecorded disbursement. Was the receivable "
-                  "re-collected or reopened?"),
+                  "re-collected or reopened?" + _reg_tag(reg)),
         details={"account": debit["account_fingerprint"], "amount": amt,
                  "description": debit["description"], "cleared_date": str(debit["date"].date()),
                  "returned_payment": True,
                  "matched_deposit_date": str(deposit["date"].date()),
-                 "bank_ref": _bank_ref(debit)})
+                 "bank_ref": _bank_ref(debit), **_reg_detail(reg)})
 
 
 def _bank_ref(line) -> str:
@@ -201,6 +202,33 @@ def _bank_ref(line) -> str:
     tail = _norm_check(line.get("check_no")) or str(line.get("description") or "")
     return "|".join([str(line.get("account_fingerprint") or ""),
                      str(line["date"].date()), f"{float(line['amount']):.2f}", tail])
+
+
+def _with_account_labels(bank: pd.DataFrame, account_labels: dict | None) -> pd.DataFrame:
+    """Attach an `account_label` column mapping each row's account_fingerprint to its
+    register name (config display_label / masked last-4). Absent mapping → NA, so
+    findings simply carry no register — never a raw account number."""
+    bank = bank.copy()
+    bank["account_label"] = (bank["account_fingerprint"].map(account_labels)
+                             if account_labels else pd.NA)
+    return bank
+
+
+def _register_of(row) -> str | None:
+    """The register label carried on a bank row, or None. Lets a finding name the
+    account a reviewer must search (e.g. '…0452', 'Ozk') without the raw number."""
+    label = row.get("account_label")
+    return label if isinstance(label, str) and label else None
+
+
+def _reg_detail(label: str | None) -> dict:
+    """The `register` detail (a to_row() workbook column) when a label is known."""
+    return {"register": label} if label else {}
+
+
+def _reg_tag(label: str | None) -> str:
+    """Inline register tag appended to a finding's question for at-a-glance reading."""
+    return f" [Register: {label}]" if label else ""
 
 
 def _books_window(transactions: pd.DataFrame, entity_id: str):
@@ -247,8 +275,14 @@ def reconcile(
     bank: pd.DataFrame,
     registry: EntityRegistry,
     config: RulesConfig,
+    *,
+    account_labels: dict | None = None,
 ) -> list[Finding]:
-    """Match each entity's bank disbursements against its book payments."""
+    """Match each entity's bank disbursements against its book payments.
+
+    `account_labels` maps account_fingerprint → register name; when supplied, each
+    bank-side finding names the register a reviewer should search."""
+    bank = _with_account_labels(bank, account_labels)
     amount_tol = float(config.param("bank_amount_tolerance"))
     date_tol = int(config.param("bank_date_tolerance_days"))
     gap_days = int(config.param("clearing_gap_days"))
@@ -321,15 +355,17 @@ def reconcile(
                     continue
                 severity = (Severity.CRITICAL if line["_amt"] >= min_critical
                             else Severity.INFO)
+                reg = _register_of(line)
                 findings.append(Finding(
                     "T4-02", severity, [entity_id],
                     question=(f"Check #{line['_check']} for ${line['_amt']:,.2f} cleared the "
                               f"bank on {line['date'].date()} but no matching payment is "
-                              "recorded in the books. Is this an unrecorded disbursement?"),
+                              "recorded in the books. Is this an unrecorded disbursement?"
+                              + _reg_tag(reg)),
                     details={"account": line["account_fingerprint"],
                              "check_no": line["_check"], "amount": float(line["_amt"]),
                              "cleared_date": str(line["date"].date()),
-                             "bank_ref": _bank_ref(line)}))
+                             "bank_ref": _bank_ref(line), **_reg_detail(reg)}))
                 continue
             # A check number is unique only WITHIN a bank account, but an entity can
             # run several accounts (e.g. operating + Ozk) whose numbers collide. Prefer
@@ -339,15 +375,16 @@ def reconcile(
             amt_match = cands[(cands["_amt"] - line["_amt"]).abs() <= amount_tol]
             book = (amt_match if not amt_match.empty else cands).iloc[0]
             matched.add(str(book["source_id"]))
+            reg = _register_of(line)
             if abs(line["_amt"] - book["_amt"]) > amount_tol:
                 findings.append(Finding(
                     "T4-04", Severity.CRITICAL, [entity_id],
                     question=(f"Check #{line['_check']} cleared for ${line['_amt']:,.2f} but the "
                               f"books record ${book['_amt']:,.2f} for {_payee(book['vendor_name'])}. "
-                              "Was the check altered, or is the entry wrong?"),
+                              "Was the check altered, or is the entry wrong?" + _reg_tag(reg)),
                     details={"check_no": line["_check"], "cleared": float(line["_amt"]),
                              "recorded": float(book["_amt"]), "vendor": book["vendor_name"],
-                             "cleared_date": str(line["date"].date())},
+                             "cleared_date": str(line["date"].date()), **_reg_detail(reg)},
                     transactions=[str(book["source_id"])]))
                 continue
             gap = (line["date"] - book["date"]).days
@@ -356,9 +393,11 @@ def reconcile(
                     "T4-06", Severity.MEDIUM, [entity_id],
                     question=(f"Check #{line['_check']} to {_payee(book['vendor_name'])} was "
                               f"recorded {book['date'].date()} but did not clear until "
-                              f"{line['date'].date()} ({gap} days). Why the long delay?"),
+                              f"{line['date'].date()} ({gap} days). Why the long delay?"
+                              + _reg_tag(reg)),
                     details={"check_no": line["_check"], "recorded_date": str(book["date"].date()),
-                             "cleared_date": str(line["date"].date()), "gap_days": gap},
+                             "cleared_date": str(line["date"].date()), "gap_days": gap,
+                             **_reg_detail(reg)},
                     transactions=[str(book["source_id"])]))
 
         # 2. Non-check bank debits → match book payments (incl. journals) by
@@ -411,16 +450,17 @@ def reconcile(
                     continue
                 severity = (Severity.CRITICAL if line["_amt"] >= min_critical
                             else Severity.INFO)
+                reg = _register_of(line)
                 findings.append(Finding(
                     "T4-09", severity, [entity_id],
                     question=(f"A non-check disbursement of ${line['_amt']:,.2f} "
                               f"({_payee(line['description'])}) cleared the bank on "
                               f"{line['date'].date()} with no matching book entry. Is this an "
-                              "authorized ACH/wire/debit?"),
+                              "authorized ACH/wire/debit?" + _reg_tag(reg)),
                     details={"account": line["account_fingerprint"],
                              "amount": float(line["_amt"]), "description": line["description"],
                              "cleared_date": str(line["date"].date()),
-                             "bank_ref": _bank_ref(line)}))
+                             "bank_ref": _bank_ref(line), **_reg_detail(reg)}))
             else:
                 matched.add(str(cands.iloc[0]["source_id"]))
 
@@ -486,19 +526,21 @@ def _unrecorded_deposit(entity_id: str, dep, nonprofit: bool,
     the review floor), not a CRITICAL."""
     amt = float(dep["_amt"])
     cleared_date = dep["date"].date()
+    reg = _register_of(dep)
     base = {"account": dep["account_fingerprint"], "amount": amt,
             "cleared_date": str(cleared_date), "description": dep["description"],
-            "bank_ref": _bank_ref(dep)}
+            "bank_ref": _bank_ref(dep), **_reg_detail(reg)}
     if nonprofit:
         return Finding(
             "T4-08", Severity.HIGH, [entity_id],
             question=(f"A bank deposit of ${amt:,.2f} cleared on {cleared_date} with no "
-                      "recorded contribution in the books. Is this an unrecorded donation?"),
+                      "recorded contribution in the books. Is this an unrecorded donation?"
+                      + _reg_tag(reg)),
             details=base)
     return Finding(
         "T4-07", Severity.MEDIUM if amt >= min_critical else Severity.INFO, [entity_id],
         question=(f"A bank deposit of ${amt:,.2f} cleared on {cleared_date} with no matching "
-                  "recorded receipt. What is the source of these funds?"),
+                  "recorded receipt. What is the source of these funds?" + _reg_tag(reg)),
         details=base)
 
 
@@ -546,6 +588,8 @@ def reconcile_deposits(
     bank: pd.DataFrame,
     registry: EntityRegistry,
     config: RulesConfig,
+    *,
+    account_labels: dict | None = None,
 ) -> list[Finding]:
     """Match each entity's recorded receipts (book deposits) against bank deposits.
 
@@ -564,6 +608,7 @@ def reconcile_deposits(
     sweep_patterns = _compile_sweep_patterns(config)
     by_id = {e.id: e for e in registry}
     active = {e.id for e in registry.active()}
+    bank = _with_account_labels(bank, account_labels)
 
     findings: list[Finding] = []
     for entity_id in sorted(set(bank["entity_id"].dropna()) & active):
@@ -661,11 +706,15 @@ def reconcile_all(
     bank: pd.DataFrame,
     registry: EntityRegistry,
     config: RulesConfig,
+    *,
+    account_labels: dict | None = None,
 ) -> list[Finding]:
     """Full Tier 4 pass: disbursements (T4-02/04/06/09) + deposits (T4-07/08),
     merged and severity-sorted. The weekly run calls this once statement
-    extraction feeds `bank_transactions`."""
-    findings = (reconcile(transactions, bank, registry, config)
-                + reconcile_deposits(transactions, bank, registry, config))
+    extraction feeds `bank_transactions`. `account_labels` (account_fingerprint →
+    register name) tags each bank-side finding with the register to search."""
+    findings = (reconcile(transactions, bank, registry, config, account_labels=account_labels)
+                + reconcile_deposits(transactions, bank, registry, config,
+                                     account_labels=account_labels))
     findings.sort(key=lambda f: (-int(f.severity), f.rule_id))
     return findings

@@ -71,6 +71,27 @@ def test_unrecorded_and_outstanding(findings):
     assert by_check["1003"] == "HIGH"       # recorded, never cleared
 
 
+def test_account_labels_tag_bank_side_findings(registry, config):
+    # With a fingerprint→register map, every finding derived from a bank line names
+    # the register (details + inline question tag); a book-only finding (a recorded
+    # check that never cleared) has no bank line, so it carries no register.
+    labels = {"acct-hash-1": "…0452"}
+    findings = reconcile(_books(), _bank(registry), registry, config, account_labels=labels)
+    for f in findings:
+        cleared = f.details.get("check_no") not in (None, "1003")  # 1003 = book-only stale check
+        if f.rule_id in {"T4-02", "T4-04", "T4-06", "T4-09"} and cleared:
+            assert f.details.get("register") == "…0452", f.details
+            assert f.question.endswith("[Register: …0452]")
+    book_only = next(f for f in by_rule(findings, "T4-02") if f.details.get("check_no") == "1003")
+    assert "register" not in book_only.details            # never cleared → no register
+
+
+def test_account_labels_absent_leaves_no_register(findings):
+    # Default path (no map): findings carry no register key and no inline tag.
+    assert all("register" not in f.details for f in findings)
+    assert all("[Register:" not in f.question for f in findings)
+
+
 def test_recorded_check_outside_bank_window_not_flagged(registry, config):
     # A check recorded months before the earliest statement can't be confirmed
     # cleared from the data we hold, so it must NOT be flagged "never cleared".

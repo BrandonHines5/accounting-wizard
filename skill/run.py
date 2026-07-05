@@ -250,7 +250,7 @@ def _run_tier4(args, registry, config, transactions, known_ids: set[str]) -> lis
     accounts_path = Path(args.bank_accounts)
     if not accounts_path.exists():
         return []
-    from bank.accounts import extract_statements, load_bank_accounts
+    from bank.accounts import account_label_map, extract_statements, load_bank_accounts
     from bank.reconcile import reconcile_all
 
     accounts = load_bank_accounts(accounts_path)
@@ -277,7 +277,13 @@ def _run_tier4(args, registry, config, transactions, known_ids: set[str]) -> lis
 
     print(f"  Tier 4: reconciling {len(bank)} bank lines across "
           f"{bank['entity_id'].nunique()} account-entities …")
-    findings = reconcile_all(transactions, bank, registry, config)
+    # Register labels (…last-4 / configured name) so each bank-side finding names
+    # the account whose register a reviewer must search. A missing account secret
+    # is skipped, never fatal.
+    account_labels = account_label_map(
+        accounts, on_error=lambda path, exc: print(f"  Tier 4: no register label for {path} — {exc}"))
+    findings = reconcile_all(transactions, bank, registry, config,
+                             account_labels=account_labels)
     print(f"  {len(findings)} reconciliation findings")
     findings += _run_check_images(args, registry, config, bank, transactions, accounts, bank_dir)
     if args.store == "supabase":
@@ -399,7 +405,8 @@ def _run_check_images(args, registry, config, bank, transactions, accounts, bank
 
     findings: list = []
     for account in accts:
-        mask = bank["account_fingerprint"] == account_fingerprint(account.account_number())
+        number = account.account_number()
+        mask = bank["account_fingerprint"] == account_fingerprint(number)
         if not mask.any():
             continue
         source = make_source(account)
@@ -408,7 +415,7 @@ def _run_check_images(args, registry, config, bank, transactions, accounts, bank
         enriched, account_findings = verify_check_images(
             source.attach(bank[mask]), transactions, reader, registry, config,
             fetch_front=source.read_front, fetch_back=source.read_back,
-            media_type=source.media_type)
+            media_type=source.media_type, register_label=account.register_label(number))
         # Write the reads back into the shared bank frame so persistence keeps them.
         read_cols = ["image_ref", "payee_read", "amount_read", "read_confidence"]
         bank.loc[enriched.index, read_cols] = enriched[read_cols]

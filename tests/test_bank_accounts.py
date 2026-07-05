@@ -3,8 +3,9 @@ per-account statement extraction with malformed-file resilience."""
 import pandas as pd
 import pytest
 
-from bank.accounts import (BankAccount, extract_account, extract_statements,
-                           load_bank_accounts)
+from bank.accounts import (BankAccount, account_label_map, extract_account,
+                           extract_statements, load_bank_accounts)
+from core.fingerprint import account_fingerprint
 
 
 def _ids(registry):
@@ -112,6 +113,54 @@ def test_extract_statements_skips_account_with_missing_secret(registry, tmp_path
                              on_error=lambda p, e: errors.append(str(e)))
     assert len(out) == 1 and set(out["entity_id"]) == {"alpha"}   # beta skipped, alpha kept
     assert len(errors) == 1
+
+
+def test_display_label_loaded(tmp_path):
+    cfg = tmp_path / "bank_accounts.yaml"
+    cfg.write_text(
+        "accounts:\n"
+        "  - entity_id: alpha\n"
+        "    label: ozk\n"
+        "    display_label: Ozk\n"
+        "    statement_glob: 'alpha/*.csv'\n"
+        "    account_number_env: ALPHA_ACCT\n")
+    (a,) = load_bank_accounts(cfg)
+    assert a.display_label == "Ozk"
+
+
+def test_register_label_defaults_to_masked_last4(monkeypatch):
+    # No display_label → the register name is the masked last-4, never the raw number.
+    acct = BankAccount("alpha", "op", "ALPHA_ACCT", "alpha/*.csv")
+    monkeypatch.setenv("ALPHA_ACCT", "9876-0452")
+    label = acct.register_label()
+    assert label == "…0452" and "9876" not in label
+
+
+def test_register_label_prefers_display_label(monkeypatch):
+    # A configured display_label overrides the last-4 and needs no secret read.
+    acct = BankAccount("alpha", "op", "ALPHA_ACCT", "alpha/*.csv", display_label="Ozk")
+    monkeypatch.delenv("ALPHA_ACCT", raising=False)
+    assert acct.register_label() == "Ozk"
+
+
+def test_account_label_map_maps_fingerprints(monkeypatch):
+    monkeypatch.setenv("ALPHA_ACCT", "1111-0452")
+    monkeypatch.setenv("BETA_ACCT", "2222-3333")
+    accounts = [BankAccount("alpha", "op", "ALPHA_ACCT", "alpha/*.csv"),
+                BankAccount("beta", "ozk", "BETA_ACCT", "beta/*.csv", display_label="Ozk")]
+    labels = account_label_map(accounts)
+    assert labels[account_fingerprint("11110452")] == "…0452"      # last-4 default
+    assert labels[account_fingerprint("22223333")] == "Ozk"        # display_label override
+
+
+def test_account_label_map_skips_missing_secret(monkeypatch):
+    monkeypatch.setenv("ALPHA_ACCT", "1111-0452")
+    monkeypatch.delenv("BETA_ACCT", raising=False)                 # beta secret unset
+    accounts = [BankAccount("alpha", "op", "ALPHA_ACCT", "alpha/*.csv"),
+                BankAccount("beta", "ozk", "BETA_ACCT", "beta/*.csv")]
+    errors = []
+    labels = account_label_map(accounts, on_error=lambda p, e: errors.append(str(e)))
+    assert list(labels.values()) == ["…0452"] and len(errors) == 1  # beta skipped, not fatal
 
 
 def test_extract_statements_concatenates_accounts(registry, tmp_path, monkeypatch):

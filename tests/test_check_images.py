@@ -131,6 +131,24 @@ def test_non_check_rows_are_skipped(registry, config):
     assert findings == [] and reader.calls == 0
 
 
+def test_register_label_tags_check_image_findings(registry, config):
+    # A per-account register label lands on every check-image finding (details +
+    # inline question tag) so the reviewer knows which register to search.
+    reader = FakeReader(_reads())
+    _, findings = verify_check_images(_bank(registry), _books(), reader, registry, config,
+                                      fetch_front=lambda ref: ref.encode(),
+                                      register_label="Ozk")
+    assert findings and all(f.details.get("register") == "Ozk" for f in findings)
+    assert all(f.question.endswith("[Register: Ozk]") for f in findings)
+
+
+def test_no_register_label_leaves_findings_untagged(result):
+    # Default path (no label): no register key, no inline tag.
+    _, findings = result
+    assert all("register" not in f.details for f in findings)
+    assert all("[Register:" not in f.question for f in findings)
+
+
 def test_bill_sharing_check_number_never_shadows_the_real_check(registry, config):
     """Regression (check #8108): a vendor bill can carry the same document number in
     QB's 'Num' column as an unrelated payment. The cancelled check must be compared
