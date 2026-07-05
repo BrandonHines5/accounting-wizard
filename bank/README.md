@@ -66,3 +66,20 @@ can ever reach Supabase.
 
 Image handling: images stay in SharePoint (restricted); Supabase stores reads +
 path reference only. Bank account numbers are hashed fingerprints, never raw.
+
+## `auto_resolve.py` — bank-verified auto-resolution (Tier 4 → Tier 1)
+
+`auto_resolve_bank_verified` uses the reconciled bank frame to clear low-dollar
+duplicate-payment findings (T1-01/T1-02) that the statement proves are two
+legitimate recurring payments: every involved book payment matched its OWN
+distinct cleared debit, those clears are spaced `auto_resolve_min_spacing_days`+
+apart (recurring cadence, not a same-week double-pay), and every payment is at or
+below `auto_resolve_max_amount` (config/rules.yaml). Confirmed findings are
+dispositioned `legit` with the evidence attached and returned separately for the
+workbook's "Auto-resolved (verified)" sheet — resolved with an audit trail, never
+silently dropped (CLAUDE.md). Only the duplicate-payment family is eligible (a
+bank clear disproves a *duplicate* worry, nothing else); fraud-signal rules and
+findings a human already dispositioned are left untouched. `skill/run.py` calls it
+after Tier 4 and disposition memory, before Tier 3, and persists the auto-
+disposition via `FindingsStore.persist_auto_dispositions` (guarded to still-open
+rows, so a human call always wins). Disable with `auto_resolve_max_amount: 0`.

@@ -118,6 +118,25 @@ class SupabaseFindingsStore(FindingsStore):
             self._table.update(_assessment_columns(f, assessment)) \
                 .eq("fingerprint", f.fingerprint()).execute()
 
+    def persist_auto_dispositions(self, findings: list[Finding]) -> None:
+        """Write the bank-verified auto-disposition (`legit`) onto existing rows,
+        guarded to `disposition = 'open'` so a human call is never overwritten.
+
+        Uses the service key (like save()), so it writes the table directly rather
+        than through the reviewer-gated set_finding_disposition RPC; the guard is
+        the eq('disposition','open') filter. The note is redacted the same way the
+        RPC redacts a human note. `dispositioned_at` is stamped now."""
+        from datetime import datetime, timezone
+        stamp = datetime.now(timezone.utc).isoformat()
+        for f in findings:
+            note = (f.details.get("auto_resolution") or "").strip()
+            self._table.update({
+                "disposition": "legit",
+                "disposition_note": redact_digits(note) or None,
+                "dispositioned_by": f.details.get("dispositioned_by", "auto:bank-verified"),
+                "dispositioned_at": stamp,
+            }).eq("fingerprint", f.fingerprint()).eq("disposition", "open").execute()
+
     @staticmethod
     def _row(finding: Finding) -> dict:
         return {

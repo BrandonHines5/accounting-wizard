@@ -80,6 +80,14 @@ class FindingsStore(ABC):
         (save() leaves existing rows untouched, so it can't persist the assessment).
         Default no-op for stores without an update path."""
 
+    def persist_auto_dispositions(self, findings: list[Finding]) -> None:
+        """Persist the automated bank-verified disposition (`legit`) for findings
+        Tier 4 auto-resolved (see bank/auto_resolve.py), setting disposition,
+        note, and `dispositioned_by='auto:bank-verified'` — but ONLY where the row
+        is still `open`, so a human decision always wins. Not a silent drop: the
+        row stays in history, fully visible and reversible. Default no-op for
+        stores without an update path."""
+
 
 class InMemoryFindingsStore(FindingsStore):
     """Non-persistent store for tests and dry runs. Seed `prior` with
@@ -102,6 +110,16 @@ class InMemoryFindingsStore(FindingsStore):
                 rec["false_positive_probability"] = f.false_positive_probability
                 rec["recommended_action"] = f.recommended_action or None
                 rec["ai_judge"] = f.ai_judge or None
+
+    def persist_auto_dispositions(self, findings: list[Finding]) -> None:
+        by_fp = {r["fingerprint"]: r for r in self._records}
+        for f in findings:
+            rec = by_fp.get(f.fingerprint())
+            # Only touch a row still open — never overwrite a human's disposition.
+            if rec is not None and str(rec.get("disposition")) == str(Disposition.OPEN):
+                rec["disposition"] = str(Disposition.LEGIT)
+                rec["disposition_note"] = f.details.get("auto_resolution")
+                rec["dispositioned_by"] = f.details.get("dispositioned_by", "auto:bank-verified")
 
     def save(self, findings: list[Finding]) -> None:
         existing = {r["fingerprint"] for r in self._records}

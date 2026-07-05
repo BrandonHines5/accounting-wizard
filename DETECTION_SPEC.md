@@ -144,6 +144,33 @@ Images stay in SharePoint (restricted); Supabase stores reads + path reference o
 
 ---
 
+## Bank-verified auto-resolution (Tier 4 → Tier 1)
+
+A duplicate-payment finding (**T1-01** exact, **T1-02** fuzzy) fires from the books
+alone and can't tell two legitimate recurring bills (a utility that reuses its
+account number monthly) from one obligation paid twice — the Tier 3 review keeps
+recommending "check the bank statement; did both clear on different dates?".
+`bank/auto_resolve.py` answers that automatically, but only from hard evidence.
+
+A duplicate is auto-resolved — dispositioned `legit`, moved to the workbook's
+**Auto-resolved (verified)** sheet, and kept in the findings history — ONLY when:
+
+1. every involved book payment cleared the bank as its **own distinct debit**
+   (a partial match — e.g. the covering statement not ingested yet — does not count);
+2. those clears are spaced `auto_resolve_min_spacing_days`+ apart (recurring
+   cadence, not a same-week double-pay); and
+3. every payment is at or below `auto_resolve_max_amount` (config/rules.yaml).
+
+This is **not** a dollar-threshold suppressor and **not** a silent drop (CLAUDE.md:
+never silently drop a CRITICAL): the CRITICAL is resolved *with* the bank evidence
+attached, stays visible and reversible, and `dispositioned_by = auto:bank-verified`.
+Only the duplicate-payment family is eligible — a bank clear disproves a *duplicate*
+worry but says nothing about miscoding, approval bypass, or a bank-detail change, so
+fraud-signal rules are never auto-resolved. Anything the evidence can't confirm, and
+any finding a human already dispositioned, stays on the review list unchanged.
+
+---
+
 ## Standing principles (encode in skill SKILL.md)
 
 1. **Independent source matching** — fraud lives in the gaps between systems nobody

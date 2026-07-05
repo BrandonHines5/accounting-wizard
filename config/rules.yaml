@@ -75,6 +75,26 @@ defaults:
   # Tier 4 check-image vision reads (T4-03/04/05)
   check_image_min_confidence: 90   # read confidence (0–100) below this → human review queue
 
+  # Bank-verified auto-resolution of low-dollar duplicate-payment findings
+  # (T1-01/T1-02 only — see bank/auto_resolve.py). A duplicate finding is
+  # auto-resolved — dispositioned `legit`, moved to the workbook's "Auto-resolved
+  # (verified)" sheet, and kept in the findings history for the audit trail — ONLY
+  # when Tier 4 independently confirms it is two legitimate recurring payments
+  # rather than one obligation paid twice: EVERY involved book payment cleared the
+  # bank as its OWN distinct debit, and those clears are spaced
+  # `auto_resolve_min_spacing_days`+ apart (a recurring monthly bill, not a
+  # same-week double-pay). This is not a silent drop — the CRITICAL is resolved
+  # WITH the bank evidence attached and stays fully visible and reversible
+  # (CLAUDE.md: never silently drop a CRITICAL). Every involved payment must be at
+  # or below `auto_resolve_max_amount`; anything larger always reaches human
+  # review, as does any finding whose covering statement isn't ingested yet.
+  # Fraud-signal rules (bank-detail changes, payee mismatches, etc.) are NEVER
+  # eligible. Set auto_resolve_max_amount: 0 to disable auto-resolution entirely.
+  auto_resolve_max_amount: 100       # per-payment ceiling in $; 0 disables the feature
+  auto_resolve_min_spacing_days: 20  # min gap (days) between the two clears to read as
+                                     # recurring cadence; below this a same-amount pair is a
+                                     # possible same-week double-pay and stays for human review
+
   # Tier 4 (T4-07/T4-09): internal cash-management sweep / linked-account transfers.
   # A "sweep" is an automatic same-institution movement between an entity's own
   # operating account and a linked sweep sub-account (e.g. a Cash Manager that
