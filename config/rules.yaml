@@ -123,6 +123,16 @@ defaults:
   merchant_fee_dup_ceiling: 250.0  # T1-01/02: a processor charge at/below this is a
                                    # per-settlement fee, not a duplicate payment (max observed
                                    # daily fee ~$191); larger processor payments still flag
+  # Returned/reversed customer payments (T4-09). When a client's card/ACH payment
+  # bounces or is charged back, the processor reverses it: a debit that mirrors an
+  # earlier processor DEPOSIT of the same amount (e.g. an "INTUIT PYMT SOLN" debit
+  # reversing an "INTUIT … DEPOSIT" received days earlier). These are legitimate
+  # returned payments, not unrecorded disbursements — so a debit matched to a
+  # strictly-earlier same-amount processor deposit within this window is annotated as
+  # a returned payment and surfaced at INFO (not CRITICAL). A processor debit with NO
+  # matching prior deposit still flags — a bounced client payment is material, and an
+  # unmatched processor debit could be a QuickBooks Bill Pay disbursement worth review.
+  merchant_return_window_days: 30  # 0 disables returned-payment recognition
 
   # Tier 2 statistical checks
   round_number_base: 100           # T2-02: "round" = an exact multiple of this dollar amount

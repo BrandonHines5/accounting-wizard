@@ -15,8 +15,11 @@ Disbursement side (`reconcile`):
   QuickBooks Payments / Intuit style fee that the processor debits per settlement
   (1% capped $15/txn bank, 3.5%+$0.30/txn card). A fee is recognized only when its
   description tags a configured processor + fee and its amount is within the expected
-  band vs the processor's own gross deposits; a larger "fee" (refund/chargeback/
-  funding reversal) is left to flag.
+  band vs the processor's own gross deposits. A returned/reversed customer payment — a
+  processor debit that mirrors an earlier processor deposit of the same amount (an ACH
+  return / card chargeback) — is likewise annotated and surfaced at INFO. A processor
+  debit with no matching prior deposit (a funding reversal or a QuickBooks Bill Pay
+  disbursement) is left to flag.
 
 Deposit side (`reconcile_deposits`):
 - T4-07 — recorded receipt with no matching bank deposit (CRITICAL, short/missing);
@@ -169,6 +172,26 @@ def _merchant_fee_note(entity_id: str, lines: list) -> Finding:
                  "first": str(dates[0].date()), "last": str(dates[-1].date())})
 
 
+def _returned_payment_finding(entity_id: str, debit, deposit) -> Finding:
+    """A payment-processor debit that reverses an earlier processor deposit of the
+    same amount — a returned/reversed customer payment (ACH return / card chargeback),
+    not an unrecorded disbursement. Surfaced at INFO with the matched deposit date so
+    the reviewer confirms the reversal at a glance instead of re-triaging a CRITICAL.
+    `deposit` is the matched {date, amt} record."""
+    amt = abs(float(debit["amount"]))
+    return Finding(
+        "T4-09", Severity.INFO, [entity_id],
+        question=(f"A payment-processor debit of ${amt:,.2f} on {debit['date'].date()} reverses "
+                  f"a matching processor deposit received {deposit['date'].date()} — a returned/"
+                  "reversed customer payment, not an unrecorded disbursement. Was the receivable "
+                  "re-collected or reopened?"),
+        details={"account": debit["account_fingerprint"], "amount": amt,
+                 "description": debit["description"], "cleared_date": str(debit["date"].date()),
+                 "returned_payment": True,
+                 "matched_deposit_date": str(deposit["date"].date()),
+                 "bank_ref": _bank_ref(debit)})
+
+
 def _bank_ref(line) -> str:
     """Stable natural key for a bank line, so a finding with no book source_id
     (an unmatched bank line) gets a unique, reproducible fingerprint instead of
@@ -241,6 +264,7 @@ def reconcile(
     fee_flat = float(config.defaults.get("merchant_fee_max_flat", 0) or 0)
     fee_rate = float(config.defaults.get("merchant_fee_max_rate", 0) or 0)
     fee_window = int(config.defaults.get("merchant_fee_window_days", 0) or 0)
+    return_window = int(config.defaults.get("merchant_return_window_days", 0) or 0)
     merchant_on = bool(proc_pat and fee_pat)
     active = {e.id for e in registry.active()}
 
@@ -272,6 +296,11 @@ def reconcile(
         proc_deposits = (bank[(bank["entity_id"] == entity_id) & (bank["amount"] > 0)
                               & bank["description"].map(lambda d: _matches_all(d, proc_pat, dep_pat))]
                          if merchant_on else bank.iloc[0:0])
+        # Consumable copy of those deposits, so a returned-payment debit can be paired
+        # with the specific deposit it reverses (each deposit reversed at most once).
+        return_deposits = ([{"date": d, "amt": abs(float(a)), "used": False}
+                            for d, a in zip(proc_deposits["date"], proc_deposits["amount"])]
+                           if merchant_on and return_window else [])
 
         # 1. Check-numbered bank lines → match book checks by number, within the
         # clearing window only: numbers recycle over an account's life, so an
@@ -336,7 +365,7 @@ def reconcile(
         # amount + date. Internal cash-management sweeps (Cash Manager /
         # linked-account transfers) clear with no book entry by design, so they
         # are recognized first and rolled into one INFO note, never a false T4-09.
-        for _, line in disb[disb["_check"] == ""].iterrows():
+        for _, line in disb[disb["_check"] == ""].sort_values("date").iterrows():
             if _is_sweep(line["description"], sweep_patterns):
                 sweep_lines.append(line)
                 continue
@@ -351,6 +380,26 @@ def reconcile(
                                      <= fee_window]["amount"].sum()
                 if line["_amt"] <= max(fee_flat, fee_rate * float(near)) + amount_tol:
                     merchant_fee_lines.append(line)
+                    continue
+            # Returned/reversed customer payment: a processor debit that mirrors an
+            # earlier processor DEPOSIT of the same amount (the client's payment
+            # bounced or was charged back). Pair it with the nearest STRICTLY-prior
+            # matching deposit within the window (so the same-day re-collection is not
+            # consumed) — a returned payment, surfaced at INFO, not a false CRITICAL.
+            # A processor debit with no prior deposit still flags (a bounced payment is
+            # material, and it could be a Bill Pay disbursement worth review).
+            if return_deposits and _matches_all(line["description"], proc_pat):
+                best = None
+                for dep in return_deposits:
+                    if dep["used"]:
+                        continue
+                    gap = (line["date"] - dep["date"]).days
+                    if 0 < gap <= return_window and abs(dep["amt"] - line["_amt"]) <= amount_tol:
+                        if best is None or gap < best[1]:
+                            best = (dep, gap)
+                if best is not None:
+                    best[0]["used"] = True
+                    findings.append(_returned_payment_finding(entity_id, line, best[0]))
                     continue
             cands = books[(~books["source_id"].astype(str).isin(matched))
                           & ((books["_amt"] - line["_amt"]).abs() <= amount_tol)

@@ -137,7 +137,7 @@ the sweep account's statement so each transfer matches its mirror.
 | T4-06 | Clearing-gap analysis | Recorded-date vs. cleared-date outliers (kiting/holding indicators) | MEDIUM |
 | T4-07 | Deposit-side match | Client payments / donations recorded in QB ↔ bank deposits; short or missing deposits | CRITICAL |
 | T4-08 | Nonprofit donation reconciliation | Donation acknowledgments/pledges vs. actual deposits — runs for every nonprofit entity in the registry (currently Hope Filled Homes) | CRITICAL |
-| T4-09 | Non-check disbursement sweep | Every ACH, wire, debit-card bank line matched to a book entry; recognized internal cash-management sweeps (`sweep_transfer_patterns`) and payment-processor fees (`merchant_*` — QuickBooks Payments/Intuit, reconciled against the processor's gross deposits at the expected rate) are matched, not flagged | CRITICAL if unmatched |
+| T4-09 | Non-check disbursement sweep | Every ACH, wire, debit-card bank line matched to a book entry; recognized internal cash-management sweeps (`sweep_transfer_patterns`), payment-processor fees (`merchant_*` — QuickBooks Payments/Intuit, reconciled against the processor's gross deposits at the expected rate), and returned/reversed customer payments (a processor debit mirroring an earlier same-amount processor deposit — ACH return/chargeback) are matched/annotated, not flagged | CRITICAL if unmatched |
 
 **Image handling:** confidence score per read; < 90% confidence → human review queue.
 Images stay in SharePoint (restricted); Supabase stores reads + path reference only.
