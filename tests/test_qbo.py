@@ -7,9 +7,10 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from ingest.qbo import (QBO_REPORTS, SANDBOX_API_BASE, EnvRefreshTokenStore, QboAuth,
-                        QboClient, api_base, flatten_report, flatten_vendors,
-                        load_qbo_config, pull_all, pull_entity)
+from ingest.qbo import (QBO_REPORTS, SANDBOX_API_BASE, TOKEN_ENDPOINT,
+                        EnvRefreshTokenStore, QboAuth, QboClient, _request_with_retry,
+                        api_base, discovery_document, flatten_report, flatten_vendors,
+                        load_qbo_config, pull_all, pull_entity, resolve_token_endpoint)
 
 
 # --------------------------------------------------------------- report fixtures
@@ -474,3 +475,130 @@ def test_pulled_csv_normalizes_through_source_mappings(tmp_path, registry):
     assert sorted(alpha["txn_type"].dropna().tolist()) == ["bill", "bill_payment", "credit_memo"]
     assert set(alpha["vendor_name"].dropna()) == {"Acme Lumber"}
     assert alpha["source_system"].unique().tolist() == ["qb"]
+
+
+# ------------------------------------------------- retry with backoff (Q3)
+
+class _SeqSession:
+    """A fake session whose get/post return queued items in order; an item that is
+    an Exception is raised instead of returned (a network error)."""
+
+    def __init__(self, items):
+        self._items = list(items)
+        self.calls = 0
+
+    def _next(self):
+        self.calls += 1
+        item = self._items.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def post(self, *a, **kw):
+        return self._next()
+
+    def get(self, *a, **kw):
+        return self._next()
+
+
+def test_request_with_retry_retries_transient_then_succeeds():
+    seq = [_Resp(503), _Resp(503), _Resp(200, payload={"ok": True})]
+    calls = {"n": 0}
+    slept = []
+
+    def do():
+        r = seq[calls["n"]]
+        calls["n"] += 1
+        return r
+
+    resp = _request_with_retry(do, label="x", retries=3, backoff=1.0, sleep=slept.append)
+    assert resp.status_code == 200 and calls["n"] == 3
+    assert slept == [1.0, 2.0]                       # exponential backoff before retries 2 and 3
+
+
+def test_request_with_retry_does_not_retry_client_error():
+    calls = {"n": 0}
+    slept = []
+
+    def do():
+        calls["n"] += 1
+        return _Resp(400)                            # invalid_grant etc. — not retryable
+
+    with pytest.raises(RuntimeError):
+        _request_with_retry(do, label="x", retries=3, sleep=slept.append)
+    assert calls["n"] == 1 and slept == []
+
+
+def test_request_with_retry_exhausts_then_raises_on_persistent_network_error():
+    calls = {"n": 0}
+    slept = []
+
+    def do():
+        calls["n"] += 1
+        raise ConnectionError("boom")
+
+    with pytest.raises(ConnectionError):
+        _request_with_retry(do, label="x", retries=2, backoff=1.0, sleep=slept.append)
+    assert calls["n"] == 3 and slept == [1.0, 2.0]   # 1 initial + 2 retries
+
+
+def test_request_with_retry_final_transient_status_raises():
+    with pytest.raises(RuntimeError):
+        _request_with_retry(lambda: _Resp(503), label="x", retries=1, sleep=lambda s: None)
+
+
+def test_access_token_retries_transient_then_persists():
+    sess = _SeqSession([_Resp(503),
+                        _Resp(200, payload={"access_token": "AT", "refresh_token": "RT2"})])
+    store = _RecordingStore("RT1")
+    slept = []
+    auth = QboAuth("cid", "secret", store, session=sess, backoff=1.0, sleep=slept.append)
+    assert auth.access_token("alpha", "R1") == "AT"
+    assert sess.calls == 2 and slept == [1.0]
+    assert store.puts == [("alpha", "R1", "RT2")]    # rotation still persisted after the retry
+
+
+def test_access_token_does_not_retry_invalid_grant():
+    sess = _SeqSession([_Resp(400, payload={"error": "invalid_grant"})])
+    store = _RecordingStore("RT1")
+    slept = []
+    auth = QboAuth("cid", "secret", store, session=sess, sleep=slept.append)
+    with pytest.raises(RuntimeError):
+        auth.access_token("alpha", "R1")
+    assert sess.calls == 1 and slept == [] and store.puts == []
+
+
+def test_client_get_retries_transient():
+    sess = _SeqSession([_Resp(500), _Resp(200, payload={"ok": 1})])
+    slept = []
+    client = QboClient(_StaticAuth("TKN"), base_url=SANDBOX_API_BASE, session=sess,
+                       backoff=1.0, sleep=slept.append)
+    assert client.report("alpha", "R1", "TransactionList") == {"ok": 1}
+    assert sess.calls == 2 and slept == [1.0]
+
+
+# ------------------------------------------ discovery-document endpoints (Q5)
+
+def test_discovery_document_returns_endpoints():
+    doc = {"issuer": "https://oauth.platform.intuit.com/op/v1",
+           "token_endpoint": "https://disco.example/token",
+           "authorization_endpoint": "https://disco.example/authorize"}
+    sess = _SeqSession([_Resp(200, payload=doc)])
+    assert discovery_document("production", session=sess)["token_endpoint"] == "https://disco.example/token"
+
+
+def test_resolve_token_endpoint_uses_discovery():
+    doc = {"token_endpoint": "https://disco.example/token"}
+    sess = _SeqSession([_Resp(200, payload=doc)])
+    assert resolve_token_endpoint("production", session=sess) == "https://disco.example/token"
+
+
+def test_resolve_token_endpoint_falls_back_when_discovery_unreachable():
+    sess = _SeqSession([RuntimeError("no network")])
+    # retries=0 → one attempt, which raises → caught → documented fallback returned.
+    assert resolve_token_endpoint("sandbox", session=sess, retries=0) == TOKEN_ENDPOINT
+
+
+def test_resolve_token_endpoint_falls_back_when_field_missing():
+    sess = _SeqSession([_Resp(200, payload={"issuer": "x"})])   # no token_endpoint
+    assert resolve_token_endpoint("production", session=sess) == TOKEN_ENDPOINT
