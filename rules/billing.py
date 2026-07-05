@@ -35,13 +35,6 @@ def _norm_invoice(value) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value).lower()) if pd.notna(value) else ""
 
 
-def _merchant_processors(config) -> list:
-    """Compiled vendor-name patterns for card/ACH payment processors (QuickBooks
-    Payments / Intuit etc.). Empty/absent → merchant-fee recognition off."""
-    return [re.compile(p, re.IGNORECASE)
-            for p in (config.defaults.get("merchant_processor_patterns") or [])]
-
-
 def _is_processor(vendor, processors: list) -> bool:
     return bool(processors) and any(p.search(str(vendor or "")) for p in processors)
 
@@ -76,7 +69,7 @@ def duplicate_payment_exact(ctx: RunContext):
 def duplicate_payment_fuzzy(ctx: RunContext):
     tol = float(ctx.config.param("fuzzy_dup_amount_tolerance"))
     window = int(ctx.config.param("fuzzy_dup_window_days"))
-    processors = _merchant_processors(ctx.config)
+    processors = ctx.config.patterns("merchant_processor_patterns")
     fee_ceiling = float(ctx.config.defaults.get("merchant_fee_dup_ceiling", 0) or 0)
     for entity_id in ctx.active_entity_ids:
         pay = _payments(ctx, entity_id, DUP_TYPES).sort_values("date")

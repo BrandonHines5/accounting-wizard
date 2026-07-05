@@ -19,7 +19,7 @@ active entities. Severity escalation for nonprofit entities keys off
 | ID | Check | Logic | Sources | Severity |
 |---|---|---|---|---|
 | T1-01 | Duplicate payment — exact | Same vendor + amount + invoice no. paid 2+ times | QB Check/Vendor Detail | CRITICAL |
-| T1-02 | Duplicate payment — fuzzy | Same vendor, amount within $1 or invoice no. differing by suffix/prefix, within 60 days. Recurring-cadence and payment-processor fees (`merchant_processor_patterns`, at/below the fee ceiling — QuickBooks Payments/Intuit debits a fee every settlement) are excluded | QB | CRITICAL |
+| T1-02 | Duplicate payment — fuzzy | Same vendor, amount within $1 or invoice no. differing by suffix/prefix, within a short configurable window (`fuzzy_dup_window_days`, default 10). Recurring-cadence and payment-processor fees (`merchant_processor_patterns`, at/below the fee ceiling — QuickBooks Payments/Intuit debits a fee every settlement) are excluded | QB | CRITICAL |
 | T1-03 | Approval bypass | Payment in QB with no matching approved bill in Adaptive (AP items) | QB + Adaptive | CRITICAL |
 | T1-04 | Threshold splitting | 2+ payments to one vendor within 7 days, each below approval threshold, sum above it | QB + Adaptive | HIGH |
 | T1-05 | Bill exceeds PO | Bill amount > PO amount (tolerance configurable, default 2%) | Adaptive/BT POs + QB | HIGH |

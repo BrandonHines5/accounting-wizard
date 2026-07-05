@@ -109,8 +109,8 @@ defaults:
   # material "PYMT SOLN" debit — a refund/chargeback/funding reversal) is NOT
   # auto-recognized and stays reviewable. Patterns are case-insensitive regexes.
   merchant_processor_patterns:     # vendor-name / bank-description tags for a processor
-    - 'intuit'
-    - 'quickbooks'
+    - '\bintuit\b'                 # anchored so "Intuitive Consulting" et al. don't match
+    - '\bquickbooks\b'
   merchant_fee_desc_patterns:      # bank-line descriptions that ARE a processor fee
     - 'tran fee'
   merchant_deposit_desc_patterns:  # bank-line descriptions that are processor gross deposits

@@ -394,10 +394,10 @@ def _merchant_bank(registry) -> pd.DataFrame:
     # separate per-settlement fee debits (1% capped $15/txn). A material "PYMT SOLN"
     # debit (refund/chargeback) is NOT a fee and must stay flagged.
     rows = [
-        (28350.00, "2026-05-11", "INTUIT 00034335 DEPOSIT 5247719930481172", ""),
-        (-15.00, "2026-05-11", "INTUIT 25474903 TRAN FEE 5247719930481172", ""),   # capped fee
-        (-3.00, "2026-05-12", "INTUIT 00739895 TRAN FEE 5247719930481172", ""),     # 1% small sale
-        (-22575.00, "2026-05-13", "INTUIT PYMT SOLN INTUITPMTS 5247719930481172", ""),  # NOT a fee
+        (28350.00, "2026-05-11", "INTUIT 00034335 DEPOSIT MERCHTESTACCT", ""),
+        (-15.00, "2026-05-11", "INTUIT 25474903 TRAN FEE MERCHTESTACCT", ""),   # capped fee
+        (-3.00, "2026-05-12", "INTUIT 00739895 TRAN FEE MERCHTESTACCT", ""),     # 1% small sale
+        (-22575.00, "2026-05-13", "INTUIT PYMT SOLN INTUITPMTS MERCHTESTACCT", ""),  # NOT a fee
     ]
     df = pd.DataFrame(rows, columns=["amount", "date", "description", "check_no"])
     df["entity_id"] = "alpha"
@@ -420,7 +420,7 @@ def test_merchant_fees_recognized_material_debit_still_flagged(registry, config)
 def test_oversized_processor_fee_is_not_auto_recognized(registry, config):
     # A "TRAN FEE" far above the expected band (no gross deposit to justify it) must
     # NOT be silently cleared — it falls through to a normal T4-09.
-    odd = pd.DataFrame([(-900.00, "2026-05-14", "INTUIT 99 TRAN FEE 5247719930481172", "")],
+    odd = pd.DataFrame([(-900.00, "2026-05-14", "INTUIT 99 TRAN FEE MERCHTESTACCT", "")],
                        columns=["amount", "date", "description", "check_no"])
     odd["entity_id"] = "alpha"
     odd["account_fingerprint"] = "acct-hash-1"

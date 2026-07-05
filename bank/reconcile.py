@@ -68,7 +68,6 @@ bank/check_images.py.
 from __future__ import annotations
 
 import itertools
-import re
 
 import pandas as pd
 
@@ -99,10 +98,9 @@ def _payee(value) -> str:
 
 
 def _compile_sweep_patterns(config: RulesConfig) -> list:
-    """Compile the configured internal-sweep description patterns
+    """The configured internal-sweep description patterns
     (config/rules.yaml `sweep_transfer_patterns`). Absent/empty → recognition off."""
-    raw = config.defaults.get("sweep_transfer_patterns") or []
-    return [re.compile(p, re.IGNORECASE) for p in raw]
+    return config.patterns("sweep_transfer_patterns")
 
 
 def _is_sweep(description, patterns: list) -> bool:
@@ -140,11 +138,6 @@ def _sweep_note(entity_id: str, side: str, lines: list) -> Finding:
         details={"stat_key": f"internal_sweep|{side}", "side": side,
                  "lines": len(lines), "net": round(net, 2), "gross": round(gross, 2),
                  "first": str(dates[0].date()), "last": str(dates[-1].date())})
-
-
-def _compile(config: RulesConfig, key: str) -> list:
-    """Compile a config list of case-insensitive regexes (empty when absent)."""
-    return [re.compile(p, re.IGNORECASE) for p in (config.defaults.get(key) or [])]
 
 
 def _matches_all(description, *groups: list) -> bool:
@@ -242,9 +235,9 @@ def reconcile(
     # Merchant card/ACH processing fees (QuickBooks Payments / Intuit): a fee debit is
     # recognized when its description tags a processor AND a fee, and its amount is
     # within the expected band vs the processor's gross deposits in the window.
-    proc_pat = _compile(config, "merchant_processor_patterns")
-    fee_pat = _compile(config, "merchant_fee_desc_patterns")
-    dep_pat = _compile(config, "merchant_deposit_desc_patterns")
+    proc_pat = config.patterns("merchant_processor_patterns")
+    fee_pat = config.patterns("merchant_fee_desc_patterns")
+    dep_pat = config.patterns("merchant_deposit_desc_patterns")
     fee_flat = float(config.defaults.get("merchant_fee_max_flat", 0) or 0)
     fee_rate = float(config.defaults.get("merchant_fee_max_rate", 0) or 0)
     fee_window = int(config.defaults.get("merchant_fee_window_days", 0) or 0)
