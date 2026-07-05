@@ -66,11 +66,16 @@ python -m skill.run --data-dir data --output output/exceptions_$(date +%Y%m%d).x
 ```
 
 **Tier 3 modes** (`--tier3`): `auto` (default — Claude review when
-`ANTHROPIC_API_KEY` is set, otherwise skipped), `on` (require Claude),
-`heuristic` (deterministic offline triage, no API call), `off`. The Claude judge
-reviews findings concurrently (independent, network-bound calls) so a full weekly
-batch isn't reviewed one-at-a-time; set `TIER3_CONCURRENCY` (default 6) to tune
-the pool — lower it if you hit Anthropic rate limits.
+`ANTHROPIC_API_KEY` is set, otherwise skipped), `on` (require Claude), `batch`
+(Claude via the Message Batches API — half cost, uncapped; for draining a large
+backlog such as a first run or a stub re-review), `heuristic` (deterministic
+offline triage, no API call), `off`. The synchronous judge reviews findings
+concurrently (independent, network-bound calls) so a full weekly batch isn't
+reviewed one-at-a-time; set `TIER3_CONCURRENCY` (default 6) to tune the pool —
+lower it if you hit Anthropic rate limits. Batch mode instead submits one async
+Message Batch and polls until it ends or `TIER3_BATCH_TIMEOUT` seconds pass
+(default 14400 = 4h); findings not back in time degrade to a provisional stub and
+are re-reviewed on the next run, so nothing is lost to a timeout.
 
 **Disposition memory** (`--store`): `none` (default) or `supabase` (needs
 `SUPABASE_URL` + `SUPABASE_SERVICE_KEY`). With a store, each run loads prior

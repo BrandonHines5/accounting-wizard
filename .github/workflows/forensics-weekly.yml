@@ -45,6 +45,10 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
+    # A batch-mode drain polls the async Message Batch for up to TIER3_BATCH_TIMEOUT
+    # (4h) below; give the job room to finish that plus the pulls/rules, staying just
+    # under the runner's 6h hard cap so a genuinely stuck run self-cancels cleanly.
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -80,6 +84,10 @@ jobs:
           HINES_HOMES_OZK_ACCT: ${{ secrets.HINES_HOMES_OZK_ACCT }}
           # batch mode exists to drain a backlog in one run — lift the per-run cap
           TIER3_MAX_REVIEW: ${{ github.event.inputs.tier3 == 'batch' && '0' || '200' }}
+          # ...and give the async Message Batch room to finish (the API's SLA is 24h);
+          # a 1h ceiling clipped large drains. Only consulted in batch mode; kept
+          # under the job's timeout-minutes so the batch degrades gracefully first.
+          TIER3_BATCH_TIMEOUT: "14400"
         run: python -u -m skill.run --pull-qbo on --pull-sharepoint on --store supabase --tier3 ${{ github.event.inputs.tier3 || 'auto' }}
       - name: Attach exceptions workbook
         if: always()
