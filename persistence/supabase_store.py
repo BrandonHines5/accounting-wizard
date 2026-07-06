@@ -75,6 +75,32 @@ def _scrub_details(value):
     return value
 
 
+# The findings table CHECK-constrains these triage columns; a bad value (a rule
+# that emitted NaN, or a legacy NULL recommended_action that round-tripped through
+# pandas as the literal string 'nan' when a prior finding is carried forward) would
+# abort the ENTIRE batch save — even on an ON CONFLICT DO NOTHING row, Postgres
+# still evaluates the CHECK. This adapter is the single persistence enforcement
+# point, so it coerces them to a constraint-satisfying value (or NULL) rather than
+# letting one poisoned finding lose the whole run's findings.
+_VALID_ACTIONS = frozenset({"clear", "verify", "escalate"})
+_VALID_JUDGES = frozenset({"model", "heuristic"})
+
+
+def _finite_probability(value):
+    """A finite float in [0, 1], else None (satisfies false_positive_probability's check)."""
+    try:
+        p = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(1.0, p)) if math.isfinite(p) else None
+
+
+def _valid_enum(value, allowed):
+    """A whitelisted token, else None. Guards on type: a NULL round-trips through
+    pandas as a float NaN whose str() is the literal 'nan', which the CHECK rejects."""
+    return value if isinstance(value, str) and value in allowed else None
+
+
 class SupabaseFindingsStore(FindingsStore):
     def __init__(self, client, schema: str = DEFAULT_SCHEMA):
         self._table = client.schema(schema).table("findings")
@@ -148,9 +174,9 @@ class SupabaseFindingsStore(FindingsStore):
             "details": _scrub_details(finding.details),
             "transaction_refs": list(finding.transactions),
             "ai_assessment": finding.ai_assessment or None,
-            "false_positive_probability": finding.false_positive_probability,
-            "recommended_action": finding.recommended_action or None,
-            "ai_judge": finding.ai_judge or None,
+            "false_positive_probability": _finite_probability(finding.false_positive_probability),
+            "recommended_action": _valid_enum(finding.recommended_action, _VALID_ACTIONS),
+            "ai_judge": _valid_enum(finding.ai_judge, _VALID_JUDGES),
         }
 
 
@@ -158,7 +184,7 @@ def _assessment_columns(finding: Finding, assessment: str) -> dict:
     """The Tier 3 payload persist_assessments writes — never a human field."""
     return {
         "ai_assessment": assessment,
-        "false_positive_probability": finding.false_positive_probability,
-        "recommended_action": finding.recommended_action or None,
-        "ai_judge": finding.ai_judge or None,
+        "false_positive_probability": _finite_probability(finding.false_positive_probability),
+        "recommended_action": _valid_enum(finding.recommended_action, _VALID_ACTIONS),
+        "ai_judge": _valid_enum(finding.ai_judge, _VALID_JUDGES),
     }
