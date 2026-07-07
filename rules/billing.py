@@ -69,6 +69,7 @@ def duplicate_payment_exact(ctx: RunContext):
 def duplicate_payment_fuzzy(ctx: RunContext):
     tol = float(ctx.config.param("fuzzy_dup_amount_tolerance"))
     window = int(ctx.config.param("fuzzy_dup_window_days"))
+    cadence_min = int(ctx.config.param("fuzzy_dup_cadence_min_count"))
     processors = ctx.config.patterns("merchant_processor_patterns")
     fee_ceiling = float(ctx.config.defaults.get("merchant_fee_dup_ceiling", 0) or 0)
     for entity_id in ctx.active_entity_ids:
@@ -80,14 +81,30 @@ def duplicate_payment_fuzzy(ctx: RunContext):
             # charges are cadence, not duplicate payments. Larger processor payments
             # still flag (only charges at/below the fee ceiling are exempt).
             processor = _is_processor(vendor, processors) and fee_ceiling > 0
-            # Recurring obligations (rent, loan payments, dues): 3+ equal
-            # amounts spaced ≥ 15 days apart are a cadence, not duplicates —
-            # don't flag undocumented pairs within them.
+            # Two kinds of recurrence are cadence, not duplicates:
+            #   * Low-frequency (rent, loan payments, dues): 3+ equal amounts
+            #     spaced ≥ 15 days apart.
+            #   * High-frequency (ad-platform threshold billing, subscriptions):
+            #     cadence_min+ equal amounts recurring FASTER than that (median
+            #     gap < 15 days) — Facebook charges the card the same threshold
+            #     amount near-daily, so pairwise flagging turns N charges into
+            #     ~N²/2 CRITICALs. Those pairs are suppressed and each cluster
+            #     surfaces as ONE INFO summary below instead (a compromised card
+            #     also looks like recurring charges, so it stays visible).
             recurring_amounts = set()
+            cadence_clusters = []
             for amount, agrp in grp.groupby("amount"):
                 gaps = agrp["date"].sort_values().diff().dt.days.dropna()
-                if len(agrp) >= 3 and not gaps.empty and gaps.min() >= 15:
+                if gaps.empty:
+                    continue
+                if len(agrp) >= 3 and gaps.min() >= 15:
                     recurring_amounts.add(amount)
+                elif len(agrp) >= cadence_min and gaps.median() < 15:
+                    recurring_amounts.add(amount)
+                    # Processor per-settlement fees already have their own
+                    # exemption and never surfaced before — no new noise for them.
+                    if not (processor and amount <= fee_ceiling):
+                        cadence_clusters.append((amount, agrp, gaps))
             rows = grp.to_dict("records")
             for i in range(len(rows)):
                 for j in range(i + 1, len(rows)):
@@ -122,9 +139,20 @@ def duplicate_payment_fuzzy(ctx: RunContext):
                     if key in seen_pairs:
                         continue
                     seen_pairs.add(key)
+                    # Card charges never carry document numbers, so "no doc on
+                    # either side" is the norm there, not a red flag: two card
+                    # swipes days apart at a similar amount is weak evidence.
+                    # The classic accidental double-swipe — same day, same
+                    # amount — keeps CRITICAL; other card-card pairs are MEDIUM.
+                    # Any pair with a check/bill/ACH side keeps CRITICAL (a card
+                    # charge AND a check for one obligation is a real dup risk).
+                    both_card = a["txn_type"] == "card" and b["txn_type"] == "card"
+                    same_day_equal = (a["date"].date() == b["date"].date()
+                                      and a["amount"] == b["amount"])
                     yield Finding(
                         rule_id="T1-02",
-                        severity=Severity.CRITICAL,
+                        severity=(Severity.MEDIUM if both_card and not same_day_equal
+                                  else Severity.CRITICAL),
                         entity_ids=[entity_id],
                         question=(
                             f"Two payments to {vendor} look like possible duplicates: "
@@ -136,6 +164,32 @@ def duplicate_payment_fuzzy(ctx: RunContext):
                         details={"vendor": vendor},
                         transactions=[str(a["source_id"]), str(b["source_id"])],
                     )
+            # One summary per high-frequency cadence cluster, in place of the
+            # suppressed pairs. Transaction-less on purpose: the cluster grows a
+            # new charge every run, and a transactions-based fingerprint would
+            # re-open a fresh finding each week — vendor + stat_key keep it
+            # stable, so one disposition sticks for the life of the cadence.
+            for amount, agrp, gaps in cadence_clusters:
+                first, last = agrp["date"].min().date(), agrp["date"].max().date()
+                yield Finding(
+                    rule_id="T1-02",
+                    severity=Severity.INFO,
+                    entity_ids=[entity_id],
+                    question=(
+                        f"{vendor} was charged ${amount:,.2f} {len(agrp)} times "
+                        f"between {first} and {last} (median gap "
+                        f"{gaps.median():.0f} days) — this looks like "
+                        "subscription/threshold billing, so the individual pairs "
+                        "were not flagged as duplicates. Is this recurring "
+                        "charge expected?"
+                    ),
+                    details={"vendor": vendor,
+                             "stat_key": f"cadence:{amount:.2f}",
+                             "amount": float(amount),
+                             "charge_count": int(len(agrp)),
+                             "first_date": str(first), "last_date": str(last),
+                             "sample": ", ".join(agrp["source_id"].astype(str).head(5))},
+                )
 
 
 @rule("T1-04", "Threshold splitting", requires="QB + approval threshold config",
