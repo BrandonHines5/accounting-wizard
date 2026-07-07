@@ -68,6 +68,7 @@ export const RULE_GROUPS = [
       { id: "T2-08", label: "Labor vs. schedule activity", desc: "Labor charged on days the schedule shows no site activity." },
       { id: "T2-09", label: "AR aging anomalies", desc: "Receivables aging then clearing in lapping-like patterns." },
       { id: "T2-10", label: "Payment-timing anomalies", desc: "Per-vendor payment cadence outliers." },
+      { id: "T2-11", label: "Spend velocity", desc: "Recent monthly spend run rate far above the vendor's or account's own history." },
     ],
   },
   {

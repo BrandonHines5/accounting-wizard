@@ -169,6 +169,18 @@ defaults:
   concentration_dominance: 0.5         # T2-05: only flag once a vendor holds >= this share
   concentration_min_total: 1000        # T2-05: ignore cost codes with little spend
 
+  # T2-11: spend velocity — a vendor's (or, for vendor-less rows, a GL account's)
+  # recent monthly run rate vs its own earlier complete months. Flags when the
+  # recent average is at least `ratio` × the prior average AND the increase is at
+  # least `min_monthly_delta` $/month (keeps a $20→$60 software subscription out
+  # of the queue). recent_months = trailing complete months treated as "now";
+  # min_history_months = complete months required before that window to
+  # establish the vendor's normal.
+  spend_velocity_recent_months: 3
+  spend_velocity_min_history_months: 4
+  spend_velocity_ratio: 3.0
+  spend_velocity_min_monthly_delta: 2000
+
 # Account-name pattern that identifies inter-company GL accounts, e.g.
 # "Due from Beta", "1920 · Loan to 13525WM, LLC". Group 1 = kind (due|loan),
 # group 2 = direction (to|from), group 3 = counterparty name resolved against

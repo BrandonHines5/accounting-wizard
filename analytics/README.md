@@ -17,6 +17,11 @@ Methodology sheet:
   `ctx.baselines` (loaded from the `baselines` table) and is a no-op until a
   baseline exists. Refresh baselines with
   `skill.run --update-baselines --store supabase`.
+- **T2-11 — Spend velocity** (`spend_velocity.py`): a vendor's (or, for
+  vendor-less rows, a GL account's) recent monthly spend run rate vs its own
+  earlier complete months — catches an overhead ramp (ad spend, subscriptions)
+  where every individual charge looks fine. Self-baselined from the ingested
+  window, like T2-10. MEDIUM.
 
 Thresholds live in `config/rules.yaml`. The single-window checks (T2-02, T2-10)
 compute inline; T2-05 uses the persisted baseline. The remaining checks (T2-01,

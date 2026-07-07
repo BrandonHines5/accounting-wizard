@@ -1,6 +1,6 @@
 # Importing the rule modules registers their Tier 2 rules with the shared engine,
 # so run_all executes them alongside Tier 1 over the canonical dataset.
-from analytics import benford, concentration, payment_timing  # noqa: F401
+from analytics import benford, concentration, payment_timing, spend_velocity  # noqa: F401
 
 from rules.engine import pending_rule
 
