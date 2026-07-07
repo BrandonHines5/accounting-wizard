@@ -61,6 +61,69 @@ def test_t1_02_still_flags_non_processor_and_large_processor(registry, config):
     assert {f.details["vendor"] for f in findings} == {"Acme", "Intuit"}
 
 
+# ---- T1-02 high-frequency billing cadence ---------------------------------------
+
+def _card(rows):
+    df = _pay(rows)
+    df["txn_type"] = "card"
+    return df
+
+
+def test_t1_02_high_frequency_cadence_collapses_to_one_summary(registry, config):
+    # Ad-platform threshold billing: the same amount charged near-daily. The
+    # ~N²/2 undocumented pairs are cadence, not duplicates — they collapse to a
+    # single INFO summary for the cluster.
+    rows = [("Facebook", 87.00, f"2026-05-{d:02d}", f"FB{d}") for d in range(1, 8)]
+    findings = list(duplicate_payment_fuzzy(
+        _ctx(txns=_card(rows), registry=registry, config=config)))
+    assert len(findings) == 1
+    f = findings[0]
+    assert str(f.severity) == "INFO" and f.details["charge_count"] == 7
+    assert f.details["stat_key"] == "cadence:87.00" and f.transactions == []
+
+
+def test_t1_02_cadence_summary_fingerprint_stable_as_cluster_grows(registry, config):
+    # Next week's run sees one more charge in the cluster; the summary must keep
+    # its fingerprint so the reviewer's disposition sticks — not reopen weekly.
+    rows = [("Facebook", 87.00, f"2026-05-{d:02d}", f"FB{d}") for d in range(1, 8)]
+    week1 = list(duplicate_payment_fuzzy(
+        _ctx(txns=_card(rows), registry=registry, config=config)))
+    rows.append(("Facebook", 87.00, "2026-05-08", "FB8"))
+    week2 = list(duplicate_payment_fuzzy(
+        _ctx(txns=_card(rows), registry=registry, config=config)))
+    assert week1[0].fingerprint() == week2[0].fingerprint()
+
+
+def test_t1_02_below_cadence_count_still_flags_pairs(registry, config):
+    # Two undocumented card charges a few days apart are below the cadence
+    # count — still a pair finding, at MEDIUM (weak evidence: cards never carry
+    # doc numbers, so "no doc on either side" is the norm there).
+    rows = [("Facebook", 87.00, "2026-05-01", "FB1"),
+            ("Facebook", 87.00, "2026-05-04", "FB2")]
+    findings = list(duplicate_payment_fuzzy(
+        _ctx(txns=_card(rows), registry=registry, config=config)))
+    assert len(findings) == 1
+    assert str(findings[0].severity) == "MEDIUM"
+    assert set(findings[0].transactions) == {"FB1", "FB2"}
+
+
+def test_t1_02_same_day_card_double_swipe_stays_critical(registry, config):
+    rows = [("Lowes", 431.17, "2026-05-01", "C1"),
+            ("Lowes", 431.17, "2026-05-01", "C2")]
+    findings = list(duplicate_payment_fuzzy(
+        _ctx(txns=_card(rows), registry=registry, config=config)))
+    assert len(findings) == 1 and str(findings[0].severity) == "CRITICAL"
+
+
+def test_t1_02_check_pairs_keep_critical(registry, config):
+    # Severity calibration is card-specific: undocumented CHECK pairs are as
+    # suspicious as ever.
+    rows = [("Acme", 500.00, "2026-05-01", "K1"), ("Acme", 500.00, "2026-05-04", "K2")]
+    findings = list(duplicate_payment_fuzzy(
+        _ctx(txns=_pay(rows), registry=registry, config=config)))
+    assert len(findings) == 1 and str(findings[0].severity) == "CRITICAL"
+
+
 # ---- T1-20 vendor/cost-code mismatch -------------------------------------------
 
 def test_t1_20_flags_stray_cost_code(registry, config):

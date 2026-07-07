@@ -18,6 +18,12 @@ defaults:
   # duplicates are being missed.
   fuzzy_dup_amount_tolerance: 1.00
   fuzzy_dup_window_days: 10
+  # An amount recurring at least this many times for one vendor, faster than the
+  # 15-day recurring-obligation spacing (median gap < 15 days), is billing
+  # cadence — ad-platform threshold charges, subscriptions — not duplicates.
+  # The pairs collapse into one INFO cadence summary per vendor+amount. Genuine
+  # double-pays are pairs (n=2), far below this.
+  fuzzy_dup_cadence_min_count: 5
 
   # T1-08: a vendor with at least this many bill payments is "AP-workflow";
   # a direct manual check to them is then flagged as a workflow bypass.
