@@ -30,6 +30,14 @@ const SORTS = [
   { value: "type", label: "Type (rule)" },
 ];
 
+// PostgREST silently caps every RPC response at 1000 rows, so list_findings is
+// paged (limit/offset) and load() keeps fetching until a short page — otherwise a
+// backlog past 1000 findings shows an arbitrary first-1000 slice (at one point:
+// all-CRITICAL, single-type, "1000 total"). RENDER_PAGE separately caps how many
+// cards mount at once; "Show more" reveals the rest without dragging first paint.
+const FETCH_PAGE = 1000;
+const RENDER_PAGE = 1000;
+
 // Tier 3 triage labels for the recommended-action filter and card line.
 const ACTION_LABEL = { clear: "Clear", verify: "Verify", escalate: "Escalate" };
 const fpProb = (f) =>
@@ -148,6 +156,9 @@ function Dashboard({ supabase, session }) {
   // separate from `error` so a re-review hiccup never reads as the disposition
   // (which is already saved) having failed.
   const [reviewNote, setReviewNote] = useState(null);
+  // Companion "it's running" notice: the re-review happens in the background on
+  // the server, so updates only appear on a later refresh — say so.
+  const [reviewInfo, setReviewInfo] = useState(null);
   // Sort + filter controls — all client-side over the already-loaded findings.
   const [sortBy, setSortBy] = useState("severity");
   const [sevFilter, setSevFilter] = useState("ALL");
@@ -158,6 +169,10 @@ function Dashboard({ supabase, session }) {
   // Multi-select for bulk disposition (fingerprints of not-yet-cleared cards).
   const [selected, setSelected] = useState(() => new Set());
   const [bulkNote, setBulkNote] = useState("");
+  // How many cards to mount (see RENDER_PAGE). Selection and bulk actions still
+  // operate on the full filtered set — the cap is a rendering economy, not a
+  // narrowing of what an action applies to.
+  const [visibleCount, setVisibleCount] = useState(RENDER_PAGE);
   // Type legend drawer. Default open where it docks beside the content (wide
   // screens); remember the reviewer's choice across visits.
   const [legendOpen, setLegendOpen] = useState(() => {
@@ -171,15 +186,27 @@ function Dashboard({ supabase, session }) {
 
   const load = useCallback(async () => {
     setError(null);
-    setReviewNote(null);   // a manual Refresh / reload clears the soft re-review notice too
+    // a manual Refresh / reload clears the soft re-review notices too
+    setReviewNote(null);
+    setReviewInfo(null);
     // Gate first: the allowlist (currently the admin only) decides access.
     const { data: ok, error: gateErr } = await supabase.rpc("is_reviewer");
     if (gateErr) { setError(gateErr.message); setAuthorized(false); return; }
     setAuthorized(!!ok);
     if (!ok) return;
-    const { data, error } = await supabase.rpc("list_findings");
-    if (error) { setError(error.message); setFindings([]); }  // resolve the loading state on error
-    else setFindings(data || []);
+    // Page until a short page so EVERY finding loads (see FETCH_PAGE). Keyed by
+    // fingerprint: a row that shifts pages while we fetch (concurrent disposition
+    // changes the sort) must not appear twice — fingerprints are React keys.
+    const byFp = new Map();
+    for (let offset = 0; ; offset += FETCH_PAGE) {
+      const { data, error } = await supabase.rpc("list_findings", {
+        p_limit: FETCH_PAGE, p_offset: offset,
+      });
+      if (error) { setError(error.message); setFindings([]); setSelected(new Set()); return; }
+      for (const f of data || []) byFp.set(f.fingerprint, f);
+      if (!data || data.length < FETCH_PAGE) break;
+    }
+    setFindings([...byFp.values()]);
     setSelected(new Set());   // a reload invalidates any in-flight selection
   }, [supabase]);
 
@@ -217,26 +244,31 @@ function Dashboard({ supabase, session }) {
         ? { ...f, disposition: value, disposition_note: trimmed || null,
             dispositioned_by: email, _busy: false } : f)));
     // The disposition + reason are now saved. Feeding the reason to the AI re-review
-    // is BEST-EFFORT: if it can't run, that must NOT read as the disposition failing,
+    // is BEST-EFFORT: if it can't start, that must NOT read as the disposition failing,
     // so show a soft notice (with the function's actual reason when available) rather
-    // than the red error banner.
+    // than the red error banner. The function only validates + snapshots before
+    // responding {started} — the model call itself runs server-side in the
+    // background, so its updates show up on a later refresh, not this reload.
     let reviewMsg = null;
+    let reviewStarted = false;
     if (trimmed) {
       setReviewing(true);
       try {
-        const { error: e } = await supabase.functions.invoke("feedback-review", { body: {} });
+        const { data, error: e } = await supabase.functions.invoke("feedback-review", { body: {} });
         if (e) {
           reviewMsg = e.message || String(e);
           try {                                  // surface the function's JSON reason
             const body = await e.context?.json?.();
             if (body?.error) reviewMsg = body.error;
           } catch { /* body wasn't JSON */ }
-        }
+        } else if (data?.started) reviewStarted = true;
       } catch (e) { reviewMsg = e?.message || String(e); }
       setReviewing(false);
     }
     await load();
     if (reviewMsg) setReviewNote(reviewMsg);
+    else if (reviewStarted) setReviewInfo(
+      "the AI is re-reviewing related open findings in the background — Refresh in a minute to see anything it updated");
   }
 
   // Dispositions the visible selection in one action (allowlist-gated RPC,
@@ -263,16 +295,20 @@ function Dashboard({ supabase, session }) {
     }
     setBulkNote("");
     let reviewMsg = null;
+    let reviewStarted = false;
     if (trimmed) {
       setReviewing(true);
       try {
-        const { error: e } = await supabase.functions.invoke("feedback-review", { body: {} });
+        const { data, error: e } = await supabase.functions.invoke("feedback-review", { body: {} });
         if (e) reviewMsg = e.message || String(e);
+        else if (data?.started) reviewStarted = true;
       } catch (e) { reviewMsg = e?.message || String(e); }
       setReviewing(false);
     }
     await load();
     if (reviewMsg) setReviewNote(reviewMsg);
+    else if (reviewStarted) setReviewInfo(
+      "the AI is re-reviewing related open findings in the background — Refresh in a minute to see anything it updated");
   }
 
   function toggleSelected(fp) {
@@ -366,11 +402,14 @@ function Dashboard({ supabase, session }) {
       </header>
 
       {error && <div className="note err">{error}</div>}
-      {reviewing && <div className="note ok">Re-reviewing the open findings with your feedback…</div>}
+      {reviewing && <div className="note ok">Starting the AI re-review with your feedback…</div>}
       {reviewNote && (
         <div className="note warn">
           Disposition saved. The AI re-review didn’t run: {reviewNote}.
         </div>
+      )}
+      {reviewInfo && (
+        <div className="note ok">Disposition saved — {reviewInfo}.</div>
       )}
       {authorized === undefined && <div className="muted">Checking access…</div>}
 
@@ -468,7 +507,7 @@ function Dashboard({ supabase, session }) {
                     onChange={(e) => setSelected(e.target.checked
                       ? new Set(selectable.map((f) => f.fingerprint))
                       : new Set())} />
-                  select all shown ({selectable.length})
+                  select all matching ({selectable.length})
                 </label>
                 {selected.size > 0 && (
                   <>
@@ -508,12 +547,23 @@ function Dashboard({ supabase, session }) {
           )}
 
           <section>
-            {sorted.map((f) => (
+            {sorted.slice(0, visibleCount).map((f) => (
               <FindingCard key={f.fingerprint} f={f} onDisposition={disposition}
                 locked={reviewing} selected={selected.has(f.fingerprint)}
                 onToggleSelect={toggleSelected} />
             ))}
           </section>
+
+          {sorted.length > visibleCount && (
+            <div className="card muted">
+              Showing the first {visibleCount.toLocaleString()} of{" "}
+              {sorted.length.toLocaleString()} matching findings.{" "}
+              <button className="link"
+                onClick={() => setVisibleCount((c) => c + RENDER_PAGE)}>
+                Show {Math.min(RENDER_PAGE, sorted.length - visibleCount).toLocaleString()} more
+              </button>
+            </div>
+          )}
 
           {legendOpen && (
             <div className="legend-backdrop" onClick={() => setLegendOpen(false)} />

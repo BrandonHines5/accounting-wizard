@@ -19,6 +19,9 @@ the Supabase URL + anon key are baked in as public-by-design defaults.)
   It calls allowlist-gated `public` RPCs — `is_reviewer()`, `list_findings()` and
   `set_finding_disposition(fingerprint, disposition, note)` — which run as
   `SECURITY DEFINER`. Setting a disposition feeds the run-over-run learning loop.
+  `list_findings(p_limit, p_offset)` is paged (migration `0018`) because PostgREST
+  caps any single response at 1000 rows; the app fetches pages until it has every
+  finding, so counts and the Type/Criticality filters cover the full backlog.
 
 ## Connect QuickBooks companies (`/qbo`)
 
@@ -76,17 +79,22 @@ corrected / Escalate) with a note, two things happen:
 1. The reason is stored (`disposition_note`) and flows into the **weekly run's Tier 3
    AI** as prior context — so next week the model judges similar findings already
    knowing why you cleared this one.
-2. The `feedback-review` **edge function** immediately **re-reviews every remaining
-   open finding** in light of your accumulated feedback. It may update a finding's
-   assessment, attach a **suggested disposition** (it never decides for you), or
-   lower a severity *with a stated reason* — it never silently drops a CRITICAL.
+2. The `feedback-review` **edge function** kicks off a re-review of the related
+   open findings in light of your accumulated feedback. The model call runs **in
+   the background on the server** — the UI unlocks immediately and shows
+   "re-reviewing in the background"; hit **Refresh** a minute later to see what
+   changed. It may update a finding's assessment or attach a **suggested
+   disposition** (it never decides for you) — it never silently drops a CRITICAL.
    Cards it touches show an "updated from your feedback" tag.
 
 The re-review needs an Anthropic key. Set it once as an edge-function secret
 (Supabase → Edge Functions → Manage secrets, or
 `supabase secrets set ANTHROPIC_API_KEY=sk-...`; optional `ANTHROPIC_MODEL`).
 Until it's set, dispositions and reasons still save normally — only the live
-re-review is skipped (it no-ops cleanly).
+re-review is skipped (it no-ops cleanly). If a background re-review fails
+(model timeout/error), the failure is recorded in the edge-function logs
+(Supabase → Edge Functions → feedback-review → Logs); the disposition itself
+is never affected.
 
 ## Develop locally
 ```bash
