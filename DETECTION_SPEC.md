@@ -80,6 +80,7 @@ active entities. Severity escalation for nonprofit entities keys off
 | T2-08 | Labor vs. schedule activity | Labor charged on days schedule shows no site activity (uses gap-analysis data) | MEDIUM |
 | T2-09 | AR aging anomalies | Receivables aging oddly then clearing in patterns (lapping indicator) | HIGH |
 | T2-10 | Payment timing anomalies | Per-vendor payment cadence outliers | INFO |
+| T2-11 | Spend velocity | Per-vendor (and vendor-less GL account) recent monthly spend run rate vs. own trailing history; flag sharp ramps | MEDIUM |
 
 ---
 

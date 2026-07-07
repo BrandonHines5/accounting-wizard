@@ -83,6 +83,29 @@ def test_txn_type_from_translates_and_drops_unowned_types():
     assert list(out["txn_type"]) == ["bill", "bill_payment"]
 
 
+def test_desktop_credit_card_charges_kept_with_expense_account():
+    # QB Desktop card purchases appear in Vendor Transaction Detail as type
+    # "Credit Card Charge": Account = the card liability, Split = the expense
+    # account. They must ingest as txn_type card with the Split as the cost
+    # account — dropping them hides an entire payment channel from every rule.
+    raw = pd.DataFrame({
+        "Type": ["Credit Card Charge", "Credit Card Charge", "Bill"],
+        "Date": ["2026-04-02", "2026-05-10", "2026-05-05"],
+        "Amount": [-31.74, -48.04, -500.0],
+        "__vendor": ["Donut Stop", "Donut Stop", "Acme"],
+        "Num": ["40318837717", "", "1"],
+        "Memo": ["", "SQ *DONUTSTOP", ""],
+        "Account": ["2201 · Sample Card", "2201 · Sample Card", "2100 · Accounts Payable"],
+        "Split": ["6400 · Staff Meetings", "6400 · Staff Meetings", "5199 · CGS Bucket"],
+    })
+    mapping = load_mappings()["qb__vendor_transaction_detail"]
+    out = normalize_frame(raw, mapping, "alpha", "qb", TRANSACTION_COLUMNS, label="test")
+    assert list(out["txn_type"]) == ["card", "card", "bill"]
+    assert list(out["account"]) == ["6400 · Staff Meetings", "6400 · Staff Meetings",
+                                    "5199 · CGS Bucket"]
+    assert list(out["vendor_name"]) == ["Donut Stop", "Donut Stop", "Acme"]
+
+
 def test_synthesized_source_ids_fill_missing():
     df = pd.DataFrame({"source_id": [None, "75256", None]})
     out = synthesize_source_ids(df, "qb__general_ledger")

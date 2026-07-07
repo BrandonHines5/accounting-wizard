@@ -58,6 +58,8 @@ qb__vendor_transaction_detail:
       "Bill Pmt -CCard": bill_payment
       "Check": check
       "Bill": bill
+      "Credit Card Charge": card    # card purchases; Account = the card liability,
+                                    # Split = the expense account (mapped below)
       # QuickBooks Online
       "Bill Payment": bill_payment
       "Bill Payment (Check)": bill_payment
@@ -65,7 +67,8 @@ qb__vendor_transaction_detail:
       "Expense": ach
       "Credit Card Expense": card
       "Cash Expense": ach
-      # Credit / Deposit / etc. are owned by other reports — dropped here
+      # Credit / Credit Card Credit / Deposit / etc. are owned by other reports —
+      # dropped here (the normalize log lists any dropped type by name)
   columns:
     date: ["Date", "Transaction date", "Transaction Date"]
     vendor_name: ["__vendor", "__vendor_qbo", "Vendor", "Name"]
