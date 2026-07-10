@@ -6,6 +6,10 @@ dispositioned. On the next run:
 
 - an *exact* re-occurrence of something a human cleared (legit / error_corrected)
   is suppressed — it never resurfaces in the active workbook;
+- an *exact* re-occurrence of something marked `cleanup_needed` is likewise
+  suppressed: the human already judged it benign, and the finding stays tracked
+  as pending cleanup in the store — re-raising it every run until the register
+  is fixed would bury real findings;
 - a *new* instance of the same pattern (same rule + entities + vendor/description)
   after a prior clear follows the RULE's recurrence policy:
   * fraud-pattern rules (duplicate payments, vendor bank changes, check
@@ -18,6 +22,9 @@ dispositioned. On the next run:
     findings are never auto-suppressed (hard rule), they just carry the prior
     reason as context;
   * every other rule passes through unchanged, annotated with the prior reason.
+- a *new* instance of a pattern previously marked `cleanup_needed` is annotated
+  only (never escalated, never suppressed): cleanup_needed means "benign but the
+  register is still messy", so a recurrence is neither a fraud ramp nor resolved.
 
 Suppressed findings are returned (not silently dropped) so the reporting layer
 can still list them for an audit trail.
@@ -39,6 +46,11 @@ from core.findings import (
 
 # Dispositions that mean a human resolved the finding (vs. open / escalated).
 _CLEARED = {str(Disposition.LEGIT), str(Disposition.ERROR_CORRECTED)}
+
+# Reviewed-benign-but-register-still-messy. Not "resolved" (the recurrence
+# policies below assume a clear), but its exact re-occurrences are suppressed
+# and its pattern recurrences annotated — never escalated as a fraud ramp.
+_CLEANUP = str(Disposition.CLEANUP_NEEDED)
 
 # Detail keys used to identify "the same kind of issue" for recurrence handling.
 _PATTERN_VENDOR_KEYS = ("vendor", "vendor_a", "debtor")
@@ -205,26 +217,36 @@ def apply_disposition_memory(
 
     Returns (kept, suppressed): `kept` is the active list (recurrences escalated
     or annotated in place per the rule's policy, re-sorted by severity);
-    `suppressed` is the exact re-occurrences of previously-cleared findings plus
-    the pattern-recurrences of suppress-policy rules, returned for the audit
-    trail rather than dropped. With no history this is a no-op."""
+    `suppressed` is the exact re-occurrences of previously-cleared or
+    cleanup_needed findings plus the pattern-recurrences of suppress-policy
+    rules, returned for the audit trail rather than dropped. With no history
+    this is a no-op."""
     if prior is None or len(prior) == 0 or "fingerprint" not in prior.columns:
         return list(findings), []
 
-    cleared = prior[prior["disposition"].astype(str).isin(_CLEARED)]
+    dispositions = prior["disposition"].astype(str)
+    cleared = prior[dispositions.isin(_CLEARED)]
+    cleanup = prior[dispositions == _CLEANUP]
     cleared_fingerprints = set(cleared["fingerprint"])
+    cleanup_fingerprints = set(cleanup["fingerprint"])
+
     # pattern key -> the human's stated reason (a non-empty note wins).
-    cleared_patterns: dict[str, str] = {}
-    for _, row in cleared.iterrows():
-        key = _pattern_key(row["rule_id"], row.get("entity_ids"), row.get("details"))
-        if key is None:
-            continue
-        # pd.isna guard: an all-null column round-trips as NaN, and str(NaN)
-        # would surface as a literal (your reason: "nan") in the finding.
-        raw_note = row.get("disposition_note")
-        note = "" if raw_note is None or pd.isna(raw_note) else str(raw_note).strip()
-        if note or key not in cleared_patterns:
-            cleared_patterns[key] = note
+    def _patterns(frame: pd.DataFrame) -> dict[str, str]:
+        patterns: dict[str, str] = {}
+        for _, row in frame.iterrows():
+            key = _pattern_key(row["rule_id"], row.get("entity_ids"), row.get("details"))
+            if key is None:
+                continue
+            # pd.isna guard: an all-null column round-trips as NaN, and str(NaN)
+            # would surface as a literal (your reason: "nan") in the finding.
+            raw_note = row.get("disposition_note")
+            note = "" if raw_note is None or pd.isna(raw_note) else str(raw_note).strip()
+            if note or key not in patterns:
+                patterns[key] = note
+        return patterns
+
+    cleared_patterns = _patterns(cleared)
+    cleanup_patterns = _patterns(cleanup)
 
     kept: list[Finding] = []
     suppressed: list[Finding] = []
@@ -232,6 +254,12 @@ def apply_disposition_memory(
         if finding.fingerprint() in cleared_fingerprints:
             finding.details["disposition_memory"] = (
                 "Suppressed: previously reviewed and dispositioned as resolved.")
+            suppressed.append(finding)
+            continue
+        if finding.fingerprint() in cleanup_fingerprints:
+            finding.details["disposition_memory"] = (
+                "Suppressed: previously reviewed and marked clean-up needed — "
+                "register cleanup still pending.")
             suppressed.append(finding)
             continue
         pattern = _pattern_key(finding.rule_id, finding.entity_ids, finding.details)
@@ -250,6 +278,13 @@ def apply_disposition_memory(
                 finding.details["prior_clear"] = (
                     "A similar finding was previously cleared"
                     f"{_prior_reason(note)} — confirm this instance matches.")
+        elif pattern is not None and pattern in cleanup_patterns:
+            # Benign-but-messy by the human's own judgment: annotate only, so the
+            # instance stays visible without reading as a fraud ramp or a clear.
+            finding.details["prior_cleanup"] = (
+                "A similar finding was previously marked clean-up needed"
+                f"{_prior_reason(cleanup_patterns[pattern])} — likely the same "
+                "register hygiene issue; confirm and include it in the cleanup.")
         kept.append(finding)
 
     kept.sort(key=lambda f: (-int(f.severity), f.rule_id))

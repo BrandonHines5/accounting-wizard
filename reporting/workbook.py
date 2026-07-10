@@ -28,25 +28,29 @@ def findings_frame(findings: list[Finding]) -> pd.DataFrame:
 
 def rule_precision_frame(prior: pd.DataFrame | None) -> pd.DataFrame:
     """Per-rule disposition history: how many findings each rule produced and how
-    the human calls came out. 'Real-issue rate' = (error_corrected + escalated) /
-    all dispositioned — the number that says which thresholds in rules.yaml to
-    tune next. Empty frame when history is missing or malformed; rules with only
-    open findings still get a row (blank rate) so coverage stays visible."""
+    the human calls came out. 'Real-issue rate' = (error_corrected +
+    cleanup_needed + escalated) / all dispositioned — the number that says which
+    thresholds in rules.yaml to tune next (clean-up needed counts as real: the
+    rule surfaced something worth fixing, even if benign). Empty frame when
+    history is missing or malformed; rules with only open findings still get a
+    row (blank rate) so coverage stays visible."""
     if (prior is None or len(prior) == 0
             or "rule_id" not in prior.columns or "disposition" not in prior.columns):
         return pd.DataFrame()
     counts = (prior.assign(disposition=prior["disposition"].astype(str))
               .groupby(["rule_id", "disposition"]).size().unstack(fill_value=0))
-    for col in ("open", "legit", "error_corrected", "escalated"):
+    for col in ("open", "legit", "error_corrected", "cleanup_needed", "escalated"):
         if col not in counts.columns:
             counts[col] = 0
-    dispositioned = counts["legit"] + counts["error_corrected"] + counts["escalated"]
-    real = counts["error_corrected"] + counts["escalated"]
+    dispositioned = (counts["legit"] + counts["error_corrected"]
+                     + counts["cleanup_needed"] + counts["escalated"])
+    real = counts["error_corrected"] + counts["cleanup_needed"] + counts["escalated"]
     out = pd.DataFrame({
         "Rule ID": counts.index,
         "Open": counts["open"].values,
         "Cleared as legit": counts["legit"].values,
         "Error corrected": counts["error_corrected"].values,
+        "Clean-up needed": counts["cleanup_needed"].values,
         "Escalated": counts["escalated"].values,
         "Real-issue rate": [
             f"{r / d:.0%}" if d else ""
@@ -126,7 +130,8 @@ def write_workbook(
              "Suppressed (disposition memory)": len(suppressed),
              "Auto-resolved (bank-verified)": len(auto_resolved),
              "Reminder": "Findings are verification questions, not accusations. "
-                         "Disposition each one: legit / error_corrected / escalated."}
+                         "Disposition each one: legit / error_corrected / "
+                         "cleanup_needed / escalated."}
         ]).to_excel(writer, sheet_name="Run Info", index=False)
 
     return output_path

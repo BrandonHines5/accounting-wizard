@@ -103,7 +103,7 @@ Add `financial_forensics` schema to the existing Supabase project:
 - `bank_transactions` — statement register lines + check image read results
   (payee_read, amount_read, confidence, image_ref → SharePoint path, never the image)
 - `findings` — rule_id, severity, entities/transactions involved, AI assessment,
-  disposition (open / legit / error_corrected / escalated), dispositioned_by, date
+  disposition (open / legit / error_corrected / cleanup_needed / escalated), dispositioned_by, date
 - `intercompany_ledger` — every cross-entity transaction, reconciled both directions
 - `baselines` — per vendor/cost-code unit cost stats, payment timing patterns,
   vendor→cost-code mappings

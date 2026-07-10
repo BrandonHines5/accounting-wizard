@@ -97,8 +97,10 @@ class HeuristicJudge(Judge):
         established = any(h.get("txn_count_in_entity", 0) >= 5
                           for h in packet.vendor_history)
         fp = 0.4 if established and finding.severity <= Severity.MEDIUM else 0.15
-        cleared_before = any(p.get("disposition") in {"legit", "error_corrected"}
-                             for p in packet.prior_findings)
+        # cleanup_needed counts: the human judged it benign (just register-messy).
+        cleared_before = any(
+            p.get("disposition") in {"legit", "error_corrected", "cleanup_needed"}
+            for p in packet.prior_findings)
         if cleared_before:
             fp = min(0.9, fp + 0.4)
         action = ("escalate" if finding.severity >= Severity.HIGH

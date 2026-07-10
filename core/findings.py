@@ -43,6 +43,10 @@ class Disposition(str, Enum):
     OPEN = "open"
     LEGIT = "legit"
     ERROR_CORRECTED = "error_corrected"
+    # Reviewed, nothing mal-intentioned — but the register still needs bookkeeping
+    # cleanup (e.g. EFT payments recorded with a check number). Intermediate between
+    # error_corrected (already fixed) and escalated (needs investigation).
+    CLEANUP_NEEDED = "cleanup_needed"
     ESCALATED = "escalated"
 
     def __str__(self) -> str:
