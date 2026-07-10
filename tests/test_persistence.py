@@ -34,6 +34,26 @@ def test_scrub_details_nulls_non_finite_floats():
                    "nested": {"pct": None}, "series": [None, 2.0]}
 
 
+def test_scrub_details_preserves_iso_dates():
+    # The digit-run pattern matches an ISO date (8 digits, single dashes), and
+    # redacting details like cleared_date to "[redacted]" poisoned list_findings'
+    # ::date fallback — one such row took down the whole review UI. A run that is
+    # EXACTLY a date is kept; account/trace runs are still masked, and a date
+    # fused to an account number by a single separator stays fully redacted.
+    out = _scrub_details({
+        "cleared_date": "2026-06-15",
+        "description": "ONLINE TRANSFER TO CHK 123456789 ON 2026-06-15",
+        "trace": "1234-5678-9012",
+        "fused": "2026-06-15 123456789",
+    })
+    assert out == {
+        "cleared_date": "2026-06-15",
+        "description": "ONLINE TRANSFER TO CHK [redacted] ON 2026-06-15",
+        "trace": "[redacted]",
+        "fused": "[redacted]",
+    }
+
+
 @pytest.fixture
 def findings(ctx):
     return run_all(ctx)
