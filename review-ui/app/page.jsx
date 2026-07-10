@@ -4,13 +4,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getSupabase } from "../lib/supabaseClient";
 import { RULE_GROUPS, RULE_INFO } from "../lib/ruleLegend";
 
+// cleanup_needed sits between error_corrected and escalated: nothing
+// mal-intentioned to investigate, but the register still needs bookkeeping
+// cleanup (e.g. an EFT payment recorded with a check number).
 const DISPOSITIONS = [
   { value: "legit", label: "Legit" },
   { value: "error_corrected", label: "Error corrected" },
+  { value: "cleanup_needed", label: "Clean-up needed" },
   { value: "escalated", label: "Escalate" },
 ];
 const DISP_LABEL = {
   legit: "Legit", error_corrected: "Error corrected",
+  cleanup_needed: "Clean-up needed",
   escalated: "Escalate", open: "Leave open",
 };
 // Internal detail keys not worth showing the reviewer.
@@ -322,9 +327,15 @@ function Dashboard({ supabase, session }) {
 
   // "Cleared" = closed (legit / error_corrected). Escalated is NOT cleared — it
   // stays active and visible, because escalating means it needs MORE attention.
+  // Clean-up needed is neither: review is done (benign), so it leaves the default
+  // queue like cleared — but the pending register work stays counted in its own
+  // KPI, and its cards stay selectable when shown (see the bulk bar) so a batch
+  // can be flipped to Error corrected once the register is actually cleaned up.
   const isCleared = (f) => f.disposition === "legit" || f.disposition === "error_corrected";
+  const isCleanup = (f) => f.disposition === "cleanup_needed";
   const openCount = (findings || []).filter((f) => f.disposition === "open").length;
   const escalatedCount = (findings || []).filter((f) => f.disposition === "escalated").length;
+  const cleanupCount = (findings || []).filter(isCleanup).length;
 
   // Both filter dropdowns offer only values present in the loaded findings, so a
   // reviewer can never pick a dead-end filter with guaranteed-empty results.
@@ -353,8 +364,10 @@ function Dashboard({ supabase, session }) {
 
   // Filter → sort pipeline. The "show cleared" toggle gates first (its result is
   // the denominator for the "X of Y" count); the new controls then narrow by
-  // criticality, type, and date window on top of that.
-  const gated = (findings || []).filter((f) => showResolved || !isCleared(f));
+  // criticality, type, and date window on top of that. Clean-up needed hides with
+  // cleared: it no longer needs review attention, only bookkeeping.
+  const gated = (findings || []).filter(
+    (f) => showResolved || (!isCleared(f) && !isCleanup(f)));
   const filtered = gated.filter((f) => {
     if (sevFilter !== "ALL" && f.severity !== sevFilter) return false;
     if (typeFilter !== "ALL" && f.rule_id !== typeFilter) return false;
@@ -430,6 +443,9 @@ function Dashboard({ supabase, session }) {
             <div className="kpi"><b>{openCount}</b><span>open</span></div>
             {escalatedCount > 0 && (
               <div className="kpi"><b>{escalatedCount}</b><span>escalated</span></div>
+            )}
+            {cleanupCount > 0 && (
+              <div className="kpi"><b>{cleanupCount}</b><span>clean-up needed</span></div>
             )}
             <div className="kpi"><b>{findings.length}</b><span>total</span></div>
             <div className="spacer" />
@@ -625,6 +641,9 @@ function FindingCard({ f, onDisposition, locked, selected, onToggleSelect }) {
   const dispositioned = f.disposition !== "open";
   // Only legit / error_corrected are "cleared" (dim + hidden by default). Escalated
   // stays active: full opacity, still actionable, just badged as escalated.
+  // Clean-up needed is hidden by default (the Dashboard gates it with cleared) but
+  // NOT dim here: when "show cleared" reveals it, it keeps its checkbox and reason
+  // box so a cleaned-up batch can be re-dispositioned to Error corrected in bulk.
   const cleared = f.disposition === "legit" || f.disposition === "error_corrected";
   const when = fmtDay(dayKeyOf(f));
   const prob = fpProb(f);

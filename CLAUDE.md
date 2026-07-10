@@ -64,7 +64,8 @@ every rule (IDs T1-xx … T4-xx). Rule IDs are stable; never renumber.
 - Supabase migrations in `supabase/`; use bulk-insert helper functions for large
   loads (MCP tool size limits).
 - Severity enum: CRITICAL / HIGH / MEDIUM / INFO. Disposition enum: open / legit /
-  error_corrected / escalated.
+  error_corrected / cleanup_needed / escalated. (`cleanup_needed` = reviewed,
+  nothing mal-intentioned, but the register still needs bookkeeping cleanup.)
 
 ## Repo map
 

@@ -292,6 +292,43 @@ def test_vendorless_clear_does_not_escalate_unrelated(ctx, registry, findings):
     assert "recurrence" not in find(kept, "T1-30").details
 
 
+def test_exact_cleanup_needed_finding_is_suppressed(ctx, registry, findings):
+    # Clean-up needed = reviewed, benign, register still messy. Until the books
+    # are fixed the exact same finding re-fires every run — suppress it (audit-
+    # trailed) instead of re-raising something the human already judged.
+    dup = find(findings, "T1-01")
+    prior = InMemoryFindingsStore([{
+        "fingerprint": dup.fingerprint(), "rule_id": "T1-01",
+        "entity_ids": ["alpha"], "disposition": "cleanup_needed",
+        "details": {"vendor": "Acme Lumber"},
+    }]).load_prior()
+
+    kept, suppressed = apply_disposition_memory(findings, prior, entities_map(registry))
+    assert dup.fingerprint() in {f.fingerprint() for f in suppressed}
+    assert dup.fingerprint() not in {f.fingerprint() for f in kept}
+    marked = next(f for f in suppressed if f.fingerprint() == dup.fingerprint())
+    assert "clean-up needed" in marked.details["disposition_memory"]
+
+
+def test_cleanup_needed_pattern_recurrence_annotates_never_escalates(registry):
+    # T1-04 is a fraud-ramp escalate rule after a CLEAR — but cleanup_needed is
+    # not a clear: a new instance of the same vendor pattern is the same known
+    # register-hygiene mess, so it passes through annotated at its own severity.
+    f = Finding("T1-04", Severity.HIGH, ["alpha"], "?",
+                details={"vendor": "Delta Dental"}, transactions=["TX-N9"])
+    prior = InMemoryFindingsStore([{
+        "fingerprint": "cleanup-fp", "rule_id": "T1-04",
+        "entity_ids": ["alpha"], "disposition": "cleanup_needed",
+        "details": {"vendor": "Delta Dental"},
+        "disposition_note": "EFT payments default to a check number",
+    }]).load_prior()
+    kept, suppressed = apply_disposition_memory([f], prior, entities_map(registry))
+    assert suppressed == []
+    assert kept[0].severity == Severity.HIGH          # unchanged, no fraud ramp
+    assert "recurrence" not in kept[0].details
+    assert "EFT payments default" in kept[0].details["prior_cleanup"]
+
+
 def test_pattern_key_requires_vendor():
     assert _pattern_key("T1-01", ["beta", "alpha"], {"vendor": "Acme"}) \
         == _pattern_key("T1-01", ["alpha", "beta"], {"vendor": "Acme"})
@@ -323,6 +360,8 @@ def test_workbook_rule_precision_sheet_from_history(registry, tmp_path):
         {"rule_id": "T1-01", "disposition": "legit"},
         {"rule_id": "T1-01", "disposition": "error_corrected"},
         {"rule_id": "T1-01", "disposition": "open"},
+        {"rule_id": "T4-03", "disposition": "cleanup_needed"},
+        {"rule_id": "T4-03", "disposition": "legit"},
         {"rule_id": "T4-09", "disposition": "legit"},
         {"rule_id": "T4-09", "disposition": "legit"},
     ])
@@ -331,10 +370,13 @@ def test_workbook_rule_precision_sheet_from_history(registry, tmp_path):
     assert "Rule Precision" in wb.sheetnames
     rows = {r[0].value: [c.value for c in r]
             for r in wb["Rule Precision"].iter_rows(min_row=2)}
+    # columns: Open, Cleared as legit, Error corrected, Clean-up needed, Escalated, rate
     # T1-01: 1 open, 1 legit, 1 error_corrected → real-issue rate 50%
-    assert rows["T1-01"][1:] == [1, 1, 1, 0, "50%"]
+    assert rows["T1-01"][1:] == [1, 1, 1, 0, 0, "50%"]
+    # T4-03: 1 legit, 1 cleanup_needed (counts as real — worth fixing) → 50%
+    assert rows["T4-03"][1:] == [0, 1, 0, 1, 0, "50%"]
     # T4-09: 2 legit, nothing real → 0%
-    assert rows["T4-09"][1:] == [0, 2, 0, 0, "0%"]
+    assert rows["T4-09"][1:] == [0, 2, 0, 0, 0, "0%"]
     # no history → no sheet
     plain = write_workbook([], registry, tmp_path / "plain.xlsx")
     assert "Rule Precision" not in load_workbook(plain).sheetnames

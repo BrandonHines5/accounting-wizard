@@ -134,7 +134,8 @@ Deno.serve(async (req) => {
       "Re-review each still-OPEN finding in light of that feedback.",
       "Findings are verification questions, not accusations; errors outnumber fraud ~100:1.",
       "Rules you MUST follow:",
-      "- You may SUGGEST a disposition (legit | error_corrected | escalated | open) but NEVER decide it; the human does.",
+      "- You may SUGGEST a disposition (legit | error_corrected | cleanup_needed | escalated | open) but NEVER decide it; the human does.",
+      "- cleanup_needed means: nothing mal-intentioned, but the books/register still need bookkeeping cleanup (e.g. an EFT payment recorded with a check number).",
       "- You do NOT set severity. If you believe a severity is wrong, say so in ai_assessment; the badge is governed elsewhere.",
       "- Only return a finding if the human feedback genuinely bears on it (same vendor, same rule pattern, same root cause). Leave unrelated findings out.",
       "- Keep each ai_assessment to one or two sentences; do not restate the finding.",
@@ -159,7 +160,7 @@ Deno.serve(async (req) => {
                 },
                 suggested_disposition: {
                   type: "string",
-                  enum: ["legit", "error_corrected", "escalated", "open"],
+                  enum: ["legit", "error_corrected", "cleanup_needed", "escalated", "open"],
                 },
               },
               required: ["fingerprint", "ai_assessment"],

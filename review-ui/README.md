@@ -72,9 +72,16 @@ then use the checkboxes + the bulk bar to disposition a whole selection in one
 call (`set_findings_disposition_bulk`, same allowlist gating and note redaction
 as the single-card path).
 
+**Clean-up needed** is the middle ground between Error corrected and Escalate:
+nothing mal-intentioned to investigate, but the register still needs bookkeeping
+cleanup (e.g. EFT payments recorded with a check number). It leaves the default
+queue like a cleared finding (toggle **show cleared** to see it), gets its own
+count in the header, and its cards stay selectable — so once the books are fixed,
+the whole batch can be flipped to **Error corrected** in one bulk action.
+
 ## Feedback that teaches the tool
 Each open finding has a **reason box**. When you disposition it (Legit / Error
-corrected / Escalate) with a note, two things happen:
+corrected / Clean-up needed / Escalate) with a note, two things happen:
 
 1. The reason is stored (`disposition_note`) and flows into the **weekly run's Tier 3
    AI** as prior context — so next week the model judges similar findings already
