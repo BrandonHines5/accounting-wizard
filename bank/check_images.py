@@ -118,6 +118,8 @@ def verify_check_images(
     so each finding tells the reviewer which register to search."""
     amount_tol = float(config.param("bank_amount_tolerance"))
     min_conf = float(config.param("check_image_min_confidence"))
+    date_tol = int(config.param("bank_date_tolerance_days"))
+    check_max_days = int(config.param("check_match_max_days"))
     active = {e.id for e in registry.active()}
 
     bank = bank.copy()
@@ -134,7 +136,7 @@ def verify_check_images(
         bank.at[idx, "read_confidence"] = read.confidence
 
         findings.extend(_review_one(row, read, transactions, amount_tol, min_conf,
-                                    register_label))
+                                    date_tol, check_max_days, register_label))
 
     findings.sort(key=lambda f: (-int(f.severity), f.rule_id))
     return bank, findings
@@ -147,12 +149,35 @@ def verify_check_images(
 _CHECK_BOOK_TYPES = {"check", "bill_payment"}
 
 
-def _book_check(transactions: pd.DataFrame, entity_id: str, check_no: str):
-    """The recorded book check (a payment) for this entity + check number, if any."""
+def _book_check(transactions: pd.DataFrame, entity_id: str, check_no: str, *,
+                cleared_date=None, cleared_amount=None, amount_tol: float = 0.0,
+                date_tol: int = 0, max_days: int = 0):
+    """The recorded book check (a payment) for this entity + check number, if any.
+
+    Mirrors bank.reconcile's collision guards: check numbers recycle across an
+    account's life and collide across an entity's accounts, so a bare-number match
+    can pair this cancelled check with an unrelated same-number payment from
+    another era or register and read as a false CRITICAL alteration (T4-04) or
+    payee mismatch (T4-03). A candidate must be recorded within the clearing
+    window of the cleared date, and among in-window candidates one whose recorded
+    amount matches what the bank actually cleared wins — only a same-number check
+    with NO amount-compatible entry is a genuine alteration signal. When every
+    same-number entry is out of window there is no book side to compare against
+    (reconcile owns the unrecorded-disbursement question for that case)."""
     same = transactions[(transactions["entity_id"] == entity_id)
                         & transactions["txn_type"].isin(_CHECK_BOOK_TYPES)
                         & (transactions["check_no"].map(_norm_check) == check_no)]
-    return None if same.empty else same.iloc[0]
+    if not same.empty and cleared_date is not None and pd.notna(cleared_date):
+        gap = (cleared_date - same["date"]).dt.days
+        same = same[gap.between(-date_tol, max_days)]
+    if same.empty:
+        return None
+    if cleared_amount is not None and pd.notna(cleared_amount):
+        consistent = same[(same["amount"].abs() - abs(float(cleared_amount))).abs()
+                          <= amount_tol]
+        if not consistent.empty:
+            same = consistent
+    return same.iloc[0]
 
 
 def _reg_detail(label: str | None) -> dict:
@@ -166,10 +191,12 @@ def _reg_tag(label: str | None) -> str:
 
 
 def _review_one(row, read: CheckRead, transactions, amount_tol, min_conf,
-                register_label: str | None = None) -> list[Finding]:
+                date_tol, max_days, register_label: str | None = None) -> list[Finding]:
     entity_id = row["entity_id"]
     check_no = _norm_check(row["check_no"])
-    book = _book_check(transactions, entity_id, check_no)
+    book = _book_check(transactions, entity_id, check_no,
+                       cleared_date=row.get("date"), cleared_amount=row.get("amount"),
+                       amount_tol=amount_tol, date_tol=date_tol, max_days=max_days)
     refs = [str(book["source_id"])] if book is not None else []
     cleared = str(row["date"].date()) if pd.notna(row.get("date")) else None
     reg, tag = _reg_detail(register_label), _reg_tag(register_label)

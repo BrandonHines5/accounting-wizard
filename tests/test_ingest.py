@@ -107,10 +107,47 @@ def test_desktop_credit_card_charges_kept_with_expense_account():
 
 
 def test_synthesized_source_ids_fill_missing():
-    df = pd.DataFrame({"source_id": [None, "75256", None]})
+    df = pd.DataFrame({
+        "source_id": [None, "75256", None],
+        "entity_id": "alpha",
+        "date": pd.to_datetime(["2026-05-01", "2026-05-02", "2026-05-03"]),
+        "vendor_name": ["Acme", "Roof Pros", "Smith Electric"],
+        "amount": [-100.0, -250.0, -75.5],
+    })
     out = synthesize_source_ids(df, "qb__general_ledger")
-    assert out["source_id"].tolist() == ["qb__general_ledger:0", "75256",
-                                         "qb__general_ledger:2"]
+    assert out.loc[1, "source_id"] == "75256"          # a real Trans # is kept
+    synthesized = [out.loc[0, "source_id"], out.loc[2, "source_id"]]
+    assert all(s.startswith("qb__general_ledger:") for s in synthesized)
+    assert len(set(synthesized)) == 2
+
+
+def test_synthesized_source_ids_survive_row_shifts():
+    # Regression (check #8058 finding pointed at an unrelated bill): positional
+    # ids re-pointed every stored transaction_ref when the next export inserted
+    # rows above. Content-hash ids must identify the SAME transaction across
+    # exports regardless of where it lands in the report.
+    row = {"entity_id": "alpha", "date": pd.Timestamp("2026-04-08"),
+           "vendor_name": "State Systems, LLC", "amount": -233.24}
+    first = pd.DataFrame([{"source_id": None, **row}])
+    later = pd.DataFrame([{"source_id": None, "entity_id": "alpha",
+                           "date": pd.Timestamp("2026-05-02"),
+                           "vendor_name": "Chore Champs", "amount": -75.0},
+                          {"source_id": None, **row}])
+    id_first = synthesize_source_ids(first, "qb__vendor_transaction_detail").loc[0, "source_id"]
+    out_later = synthesize_source_ids(later, "qb__vendor_transaction_detail")
+    assert out_later.loc[1, "source_id"] == id_first
+    assert out_later.loc[0, "source_id"] != id_first
+
+
+def test_synthesized_source_ids_suffix_identical_split_lines():
+    # Two genuinely identical rows (e.g. one transaction's split posted twice to
+    # the same account) hash the same; they get occurrence suffixes so the
+    # (entity_id, source_system, source_id) persistence key stays unique.
+    row = {"source_id": None, "entity_id": "alpha",
+           "date": pd.Timestamp("2026-05-01"), "vendor_name": "Acme", "amount": -50.0}
+    out = synthesize_source_ids(pd.DataFrame([row, row]), "qb__general_ledger")
+    base, second = out["source_id"].tolist()
+    assert second == f"{base}#2"
 
 
 def test_ensure_unique_source_ids_suffixes_split_lines():
