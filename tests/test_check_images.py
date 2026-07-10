@@ -184,3 +184,80 @@ def test_bill_sharing_check_number_never_shadows_the_real_check(registry, config
     # Image matches the payment on both payee and amount → no finding at all, and
     # certainly no T4-04 alteration comparing $12,197 read against the bill's $2,808.
     assert findings == []
+
+
+def _bank_one(registry, check_no, image_ref, amount, date):
+    df = pd.DataFrame([(check_no, image_ref, amount)],
+                      columns=["check_no", "image_ref", "amount"])
+    df["entity_id"] = "alpha"
+    df["account_fingerprint"] = "acct-hash-9"
+    df["date"] = pd.to_datetime(date)
+    df["description"] = f"Check {check_no}"
+    return validate_bank_transactions(df, {e.id for e in registry})
+
+
+def test_cross_era_check_number_collision_never_pairs(registry, config):
+    """Regression (check #8058): check numbers recycle over an account's life, so
+    a years-old payment can share its number with today's cancelled check. The
+    image must be compared against the payment that actually cleared — picked by
+    date window + cleared-amount preference — never the unrelated old entry, else
+    the correct read trips a false CRITICAL T4-04 against the old amount. The old
+    entry is listed FIRST so a bare first-match would grab it."""
+    books = pd.DataFrame(
+        [
+            ("CHK-OLD", "check", "Cincinnati Insurance Companies", 5556.00, "8058",
+             "2025-05-24"),
+            ("PMT-8058", "bill_payment", "State Systems, LLC", 233.24, "8058",
+             "2026-04-08"),
+        ],
+        columns=["source_id", "txn_type", "vendor_name", "amount", "check_no", "date"],
+    )
+    books["entity_id"] = "alpha"
+    books["date"] = pd.to_datetime(books["date"])
+
+    bank = _bank_one(registry, "8058", "img-8058", -233.24, "2026-04-13")
+    reader = FakeReader({"img-8058": CheckRead(payee="State Systems, LLC",
+                                               amount=233.24, confidence=99)})
+    _, findings = verify_check_images(bank, books, reader, registry, config,
+                                      fetch_front=lambda ref: ref.encode())
+    assert findings == []
+
+
+def test_out_of_window_number_match_is_no_match(registry, config):
+    # When the ONLY same-number book entry is from another era, there is no book
+    # side to compare the image against (reconcile owns the unrecorded question) —
+    # not a false alteration/payee mismatch against the unrelated old entry.
+    books = pd.DataFrame(
+        [("CHK-OLD", "check", "Cincinnati Insurance Companies", 5556.00, "8058")],
+        columns=["source_id", "txn_type", "vendor_name", "amount", "check_no"])
+    books["entity_id"] = "alpha"
+    books["date"] = pd.to_datetime("2025-05-24")
+
+    bank = _bank_one(registry, "8058", "img-8058", -233.24, "2026-04-13")
+    reader = FakeReader({"img-8058": CheckRead(payee="State Systems, LLC",
+                                               amount=233.24, confidence=99)})
+    _, findings = verify_check_images(bank, books, reader, registry, config,
+                                      fetch_front=lambda ref: ref.encode())
+    assert findings == []
+
+
+def test_in_window_collision_prefers_the_cleared_amount(registry, config):
+    # An entity running two accounts can have the same check number live in both
+    # (reconcile docstring: operating + Ozk). Both entries are in-window, so the
+    # date guard alone can't split them — the one whose recorded amount matches
+    # what the bank cleared must win.
+    books = pd.DataFrame(
+        [
+            ("CHK-OZK", "check", "Ozk Payee", 500.00, "7001"),
+            ("CHK-OPER", "check", "Operating Payee", 900.00, "7001"),
+        ],
+        columns=["source_id", "txn_type", "vendor_name", "amount", "check_no"])
+    books["entity_id"] = "alpha"
+    books["date"] = pd.to_datetime("2026-05-05")
+
+    bank = _bank_one(registry, "7001", "img-7001", -900.00, "2026-05-08")
+    reader = FakeReader({"img-7001": CheckRead(payee="Operating Payee",
+                                               amount=900.00, confidence=99)})
+    _, findings = verify_check_images(bank, books, reader, registry, config,
+                                      fetch_front=lambda ref: ref.encode())
+    assert findings == []

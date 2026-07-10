@@ -28,6 +28,7 @@ row gets stamped with its entity.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pandas as pd
@@ -233,16 +234,40 @@ def clean_transactions(df: pd.DataFrame, label: str = "export") -> pd.DataFrame:
     return df
 
 
-def synthesize_source_ids(df: pd.DataFrame, key: str) -> pd.DataFrame:
-    """Reports without a Trans # column get row-position ids (<report>:<row>).
+# The fields that constitute a transaction's identity for content-hash ids. Any
+# canonical column that describes the transaction itself belongs here; a row whose
+# content changed in QB IS a different transaction as far as the books go.
+_CONTENT_ID_COLUMNS = ("entity_id", "txn_type", "date", "vendor_name", "amount",
+                       "check_no", "invoice_no", "account", "memo", "cost_code",
+                       "qty", "job_id")
 
-    Stable within one export; once Trans # is added to the memorized report
-    (Customize Report → Display) real ids take over automatically.
+
+def synthesize_source_ids(df: pd.DataFrame, key: str) -> pd.DataFrame:
+    """Reports without a Trans # column get content-hash ids (<report>:<sha1-12>).
+
+    Hashed from the row's identifying fields, NOT its position: QB books grow and
+    reorder between exports, so a positional id silently re-points a stored
+    finding's transaction_refs at whatever transaction occupies that row on the
+    next load — and makes finding fingerprints (which include these ids) collide
+    across unrelated transactions. A content hash survives re-exports as long as
+    the transaction itself is unchanged. Identical split lines get an occurrence
+    suffix (#2, #3, …) in export order, matching ensure_unique_source_ids'
+    convention. Once Trans # is added to the memorized report (Customize Report →
+    Display) real ids take over automatically.
     """
     missing = df["source_id"].isna()
-    if missing.any():
-        df = df.copy()
-        df.loc[missing, "source_id"] = [f"{key}:{i}" for i in df.index[missing]]
+    if not missing.any():
+        return df
+    df = df.copy()
+    cols = [c for c in _CONTENT_ID_COLUMNS if c in df.columns]
+
+    def _content_id(row) -> str:
+        basis = "|".join("" if pd.isna(row[c]) else str(row[c]) for c in cols)
+        return f"{key}:{hashlib.sha1(basis.encode('utf-8')).hexdigest()[:12]}"
+
+    ids = df.loc[missing].apply(_content_id, axis=1)
+    rank = ids.groupby(ids).cumcount()
+    df.loc[missing, "source_id"] = ids.where(rank == 0, ids + "#" + (rank + 1).astype(str))
     return df
 
 
