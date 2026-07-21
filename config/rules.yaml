@@ -25,6 +25,26 @@ defaults:
   # double-pays are pairs (n=2), far below this.
   fuzzy_dup_cadence_min_count: 5
 
+  # T1-01/T1-02: recurring-biller vendors — utility-billing aggregators and the
+  # like whose SAME account (identified by its invoice/reference number) recurs
+  # every billing cycle at a similar amount. That recurrence is normal billing,
+  # not a duplicate payment, and unlike a genuine double-pay it is spaced weeks
+  # apart. For a vendor matching any pattern here, a duplicate is raised ONLY when
+  # two entries share the SAME invoice/reference number AND fall within
+  # recurring_biller_dup_window_days of each other. Two entries a month apart, or
+  # carrying different reference numbers, are recurring bills and are not flagged.
+  # NOTE: QuickBooks clears the invoice/ref field on payment rows (a check/ACH
+  # carries its check number there instead — see ingest/normalize.py
+  # route_document_number), so this same-account match lands on the bill entries;
+  # a pair of bare payments with no reference is treated as a different account
+  # and suppressed for these vendors. Patterns are case-insensitive regexes
+  # matched on the vendor name; empty list = carve-out off. This narrows what the
+  # deterministic rule raises up front; the bank-verified auto-resolution below is
+  # the separate, evidence-gated path for duplicates that still fire.
+  recurring_biller_patterns:
+    - '\butility billing services\b'
+  recurring_biller_dup_window_days: 7
+
   # T1-08: a vendor with at least this many bill payments is "AP-workflow";
   # a direct manual check to them is then flagged as a workflow bypass.
   ap_vendor_established_min: 3
@@ -64,6 +84,18 @@ defaults:
 
   # T1-30: credit memos / write-offs above this are listed for review
   credit_memo_threshold: 250
+  # T1-30: large, arms-length suppliers where collusion is impractical — their
+  # credit memos / write-offs are routine billing corrections (returns, price
+  # adjustments), not a concealment concern, so exclude them from the review list.
+  # Patterns are case-insensitive regexes matched on the credit's party (the vendor
+  # name); empty list = exclude nothing. Scoped to T1-30 only — an excluded vendor
+  # is still fully covered by every other rule.
+  credit_memo_low_risk_vendor_patterns:
+    - '\blumber one\b'
+    - '\babc supply\b'
+    - '\bacme brick\b'
+    - '\babc block & brick\b'
+    - '\bantique brick\b'
 
   # Tier 4 bank reconciliation (three-way match)
   bank_amount_tolerance: 0.01      # cleared vs recorded amount must agree within this

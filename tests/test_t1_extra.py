@@ -2,8 +2,10 @@
 code mismatch) and T1-14 (vendor bank-detail change)."""
 import pandas as pd
 
-from rules.billing import duplicate_payment_fuzzy, manual_check_on_ap_vendor
+from rules.billing import (duplicate_payment_exact, duplicate_payment_fuzzy,
+                           manual_check_on_ap_vendor)
 from rules.coding import vendor_costcode_mismatch
+from rules.credits import credit_memo_listing
 from rules.engine import RunContext
 from rules.vendor_master import vendor_bank_detail_change
 
@@ -122,6 +124,151 @@ def test_t1_02_check_pairs_keep_critical(registry, config):
     findings = list(duplicate_payment_fuzzy(
         _ctx(txns=_pay(rows), registry=registry, config=config)))
     assert len(findings) == 1 and str(findings[0].severity) == "CRITICAL"
+
+
+# ---- T1-01 / T1-02 recurring-biller (utility) carve-out -------------------------
+
+UTIL = "Utility Billing Services"   # matches recurring_biller_patterns in rules.yaml
+
+
+def _billed(rows):
+    # rows: (vendor_name, amount, date, invoice_no, txn_type, source_id)
+    df = pd.DataFrame(rows, columns=["vendor_name", "amount", "date",
+                                     "invoice_no", "txn_type", "source_id"])
+    df["entity_id"] = "alpha"
+    df["check_no"] = ""
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def test_t1_01_recurring_biller_monthly_same_account_suppressed(registry, config):
+    # A utility billed monthly reuses one account/reference number — same
+    # vendor+amount+ref every cycle. A month apart is recurring billing, not a
+    # duplicate, so T1-01 must NOT flag it.
+    rows = [(UTIL, 66.92, "2026-04-08", "20276531", "bill", "B1"),
+            (UTIL, 66.92, "2026-05-08", "20276531", "bill", "B2")]
+    findings = list(duplicate_payment_exact(
+        _ctx(txns=_billed(rows), registry=registry, config=config)))
+    assert findings == []
+
+
+def test_t1_01_recurring_biller_same_account_within_window_flags(registry, config):
+    # Safety valve: the SAME account/reference billed twice within a few days is a
+    # genuine double-entry and still flags.
+    rows = [(UTIL, 66.92, "2026-04-08", "20276531", "bill", "B1"),
+            (UTIL, 66.92, "2026-04-11", "20276531", "bill", "B2")]
+    findings = list(duplicate_payment_exact(
+        _ctx(txns=_billed(rows), registry=registry, config=config)))
+    assert len(findings) == 1
+    assert findings[0].rule_id == "T1-01" and str(findings[0].severity) == "CRITICAL"
+    assert set(findings[0].transactions) == {"B1", "B2"}
+
+
+def test_t1_01_non_biller_monthly_duplicate_still_flags(registry, config):
+    # The carve-out is scoped to recurring-biller vendors: an ordinary vendor with
+    # the same invoice number + amount a month apart is a real duplicate and must
+    # still flag — no blanket monthly suppression.
+    rows = [("Acme Roofing", 66.92, "2026-04-08", "INV-77", "bill", "B1"),
+            ("Acme Roofing", 66.92, "2026-05-08", "INV-77", "bill", "B2")]
+    findings = list(duplicate_payment_exact(
+        _ctx(txns=_billed(rows), registry=registry, config=config)))
+    assert len(findings) == 1 and findings[0].rule_id == "T1-01"
+
+
+def test_t1_01_recurring_biller_reports_only_in_window_cluster(registry, config):
+    # Monthly bills at the same reference PLUS a same-week double: the finding must
+    # name only the two close entries, not the innocent earlier monthly bill.
+    rows = [(UTIL, 66.92, "2026-04-08", "20276531", "bill", "APR"),
+            (UTIL, 66.92, "2026-05-08", "20276531", "bill", "MAY"),
+            (UTIL, 66.92, "2026-05-11", "20276531", "bill", "MAY2")]
+    findings = list(duplicate_payment_exact(
+        _ctx(txns=_billed(rows), registry=registry, config=config)))
+    assert len(findings) == 1
+    assert set(findings[0].transactions) == {"MAY", "MAY2"}   # APR excluded
+
+
+def test_t1_01_normalizes_reference_formatting_variants(registry, config):
+    # "INV-77" and "inv 77" are the same document with formatting noise. They must
+    # land in one T1-01 group — T1-02 defers same-normalized-reference equal pairs
+    # here, so raw-string grouping would drop the duplicate between both rules.
+    rows = [("Acme Roofing", 500.00, "2026-05-01", "INV-77", "bill", "B1"),
+            ("Acme Roofing", 500.00, "2026-05-04", "inv 77", "bill", "B2")]
+    findings = list(duplicate_payment_exact(
+        _ctx(txns=_billed(rows), registry=registry, config=config)))
+    assert len(findings) == 1
+    assert findings[0].rule_id == "T1-01" and str(findings[0].severity) == "CRITICAL"
+    assert set(findings[0].transactions) == {"B1", "B2"}
+
+
+def test_t1_02_recurring_biller_payment_pair_without_reference_suppressed(registry, config):
+    # Check/ACH payments carry no invoice/reference number (QB stores the check
+    # number there), so a bare payment pair can't be tied to the same account — for
+    # a recurring biller these read as recurring billing, not duplicates. (Without
+    # the carve-out this undocumented same-amount check pair would flag CRITICAL.)
+    rows = [(UTIL, 120.00, "2026-05-05", "P1"), (UTIL, 120.00, "2026-05-08", "P2")]
+    findings = list(duplicate_payment_fuzzy(
+        _ctx(txns=_pay(rows), registry=registry, config=config)))
+    assert findings == []
+
+
+def test_t1_02_recurring_biller_same_reference_near_amount_within_window_flags(registry, config):
+    # Same account/reference, near-equal amounts (within the $1 tolerance), a few
+    # days apart is a genuine same-account near-duplicate and still flags.
+    rows = [(UTIL, 66.92, "2026-05-05", "20276531", "bill", "B1"),
+            (UTIL, 67.00, "2026-05-08", "20276531", "bill", "B2")]
+    findings = list(duplicate_payment_fuzzy(
+        _ctx(txns=_billed(rows), registry=registry, config=config)))
+    assert len(findings) == 1
+    assert findings[0].rule_id == "T1-02"
+    assert set(findings[0].transactions) == {"B1", "B2"}
+
+
+def test_t1_02_recurring_biller_different_account_within_window_suppressed(registry, config):
+    # Two different utility accounts (different reference numbers) billed near-equal
+    # amounts the same week are separate obligations, not a duplicate — suppressed
+    # for a recurring biller even though the invoice numbers are prefix variants.
+    rows = [(UTIL, 66.92, "2026-05-05", "20276531", "bill", "B1"),
+            (UTIL, 66.92, "2026-05-08", "20276531-2", "bill", "B2")]
+    findings = list(duplicate_payment_fuzzy(
+        _ctx(txns=_billed(rows), registry=registry, config=config)))
+    assert findings == []
+
+
+# ---- T1-30 low-risk large-supplier credit-memo exclusion ------------------------
+
+def _credits(rows):
+    # rows: (vendor_name, amount, date, source_id)
+    df = pd.DataFrame(rows, columns=["vendor_name", "amount", "date", "source_id"])
+    df["entity_id"] = "alpha"
+    df["txn_type"] = "credit_memo"
+    df["memo"] = None
+    df["invoice_no"] = None
+    df["entered_by"] = "jsmith"
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def test_t1_30_excludes_low_risk_large_suppliers(registry, config):
+    # Large arms-length suppliers (credit_memo_low_risk_vendor_patterns) — their
+    # credits are routine billing corrections, kept off the review list.
+    rows = [("Lumber One", 1200.00, "2026-05-01", "CM1"),
+            ("ABC Supply Co", 900.00, "2026-05-02", "CM2"),
+            ("ABC Block & Brick", 750.00, "2026-05-03", "CM3"),
+            ("Antique Brick", 610.00, "2026-05-04", "CM4")]
+    findings = list(credit_memo_listing(
+        _ctx(txns=_credits(rows), registry=registry, config=config)))
+    assert findings == []
+
+
+def test_t1_30_still_flags_other_vendor_credit(registry, config):
+    # The exclusion is scoped to the named suppliers — any other vendor's credit
+    # above threshold still surfaces for review.
+    rows = [("Sketchy Subcontractor LLC", 1200.00, "2026-05-01", "CM9")]
+    findings = list(credit_memo_listing(
+        _ctx(txns=_credits(rows), registry=registry, config=config)))
+    assert len(findings) == 1
+    assert findings[0].rule_id == "T1-30" and str(findings[0].severity) == "MEDIUM"
+    assert findings[0].details["entered_by"] == "jsmith"
 
 
 # ---- T1-20 vendor/cost-code mismatch -------------------------------------------

@@ -18,8 +18,8 @@ active entities. Severity escalation for nonprofit entities keys off
 
 | ID | Check | Logic | Sources | Severity |
 |---|---|---|---|---|
-| T1-01 | Duplicate payment — exact | Same vendor + amount + invoice no. paid 2+ times | QB Check/Vendor Detail | CRITICAL |
-| T1-02 | Duplicate payment — fuzzy | Same vendor, amount within $1 or invoice no. differing by suffix/prefix, within a short configurable window (`fuzzy_dup_window_days`, default 10). Excluded as cadence, not duplicates: payment-processor fees (`merchant_processor_patterns`, at/below the fee ceiling — QuickBooks Payments/Intuit debits a fee every settlement); low-frequency recurring obligations (3+ equal amounts spaced ≥ 15 days); high-frequency billing cadence (`fuzzy_dup_cadence_min_count`+ equal amounts, median gap < 15 days — ad-platform threshold charges, subscriptions), surfaced as one INFO summary per vendor+amount cluster instead of ~N²/2 pairs | QB | CRITICAL; card-card pair that isn't a same-day equal-amount double-swipe: MEDIUM; cadence summary: INFO |
+| T1-01 | Duplicate payment — exact | Same vendor + amount + invoice no. paid 2+ times. Recurring-biller vendors (`recurring_biller_patterns` — e.g. a utility reusing one account/reference number each cycle) only flag when two entries fall within `recurring_biller_dup_window_days`; a monthly cadence at the same reference is normal billing | QB Check/Vendor Detail | CRITICAL |
+| T1-02 | Duplicate payment — fuzzy | Same vendor, amount within $1 or invoice no. differing by suffix/prefix, within a short configurable window (`fuzzy_dup_window_days`, default 10). Excluded as cadence, not duplicates: payment-processor fees (`merchant_processor_patterns`, at/below the fee ceiling — QuickBooks Payments/Intuit debits a fee every settlement); low-frequency recurring obligations (3+ equal amounts spaced ≥ 15 days); high-frequency billing cadence (`fuzzy_dup_cadence_min_count`+ equal amounts, median gap < 15 days — ad-platform threshold charges, subscriptions), surfaced as one INFO summary per vendor+amount cluster instead of ~N²/2 pairs; recurring-biller vendors (`recurring_biller_patterns`) where only a same-reference repeat within `recurring_biller_dup_window_days` flags (different accounts or a longer gap are normal recurring billing) | QB | CRITICAL; card-card pair that isn't a same-day equal-amount double-swipe: MEDIUM; cadence summary: INFO |
 | T1-03 | Approval bypass | Payment in QB with no matching approved bill in Adaptive (AP items) | QB + Adaptive | CRITICAL |
 | T1-04 | Threshold splitting | 2+ payments to one vendor within 7 days, each below approval threshold, sum above it | QB + Adaptive | HIGH |
 | T1-05 | Bill exceeds PO | Bill amount > PO amount (tolerance configurable, default 2%) | Adaptive/BT POs + QB | HIGH |
@@ -53,7 +53,7 @@ active entities. Severity escalation for nonprofit entities keys off
 
 | ID | Check | Logic | Sources | Severity |
 |---|---|---|---|---|
-| T1-30 | Credit memo listing | Every credit memo / write-off above threshold listed with entered_by | QB | MEDIUM (review list) |
+| T1-30 | Credit memo listing | Every credit memo / write-off above threshold listed with entered_by. Large arms-length suppliers where collusion is impractical (`credit_memo_low_risk_vendor_patterns`) are excluded — their credits are routine billing corrections | QB | MEDIUM (review list) |
 | T1-31 | Expected credit tracking | Returned materials, insurance refunds, deposit returns logged → verify bank receipt within window | Manual log + bank | HIGH if missing |
 
 ### Expense reimbursement / cards

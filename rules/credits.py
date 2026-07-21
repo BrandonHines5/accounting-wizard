@@ -11,6 +11,7 @@ from rules.engine import RunContext, pending_rule, rule
 @rule("T1-30", "Credit memo listing", requires="QB credit memo / write-off export")
 def credit_memo_listing(ctx: RunContext):
     threshold = float(ctx.config.param("credit_memo_threshold"))
+    low_risk = ctx.config.patterns("credit_memo_low_risk_vendor_patterns")
     for entity_id in ctx.active_entity_ids:
         df = ctx.entity_transactions(entity_id)
         credits_df = df[df["txn_type"].isin({"credit_memo", "write_off"})]
@@ -22,6 +23,11 @@ def credit_memo_listing(ctx: RunContext):
             row = grp.iloc[0]
             vendors = grp["vendor_name"].dropna()
             party = vendors.iloc[0] if not vendors.empty else (row["memo"] or "unspecified party")
+            # Large, arms-length suppliers where collusion is impractical: their
+            # credits are routine billing corrections, not a concealment concern —
+            # excluded from the review list (credit_memo_low_risk_vendor_patterns).
+            if low_risk and any(p.search(str(party)) for p in low_risk):
+                continue
             kind = "Write-off" if row["txn_type"] == "write_off" else "Credit memo"
             yield Finding(
                 rule_id="T1-30",

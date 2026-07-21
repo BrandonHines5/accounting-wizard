@@ -39,17 +39,44 @@ def _is_processor(vendor, processors: list) -> bool:
     return bool(processors) and any(p.search(str(vendor or "")) for p in processors)
 
 
+def _is_recurring_biller(vendor, billers: list) -> bool:
+    """A vendor whose same account (its invoice/reference number) recurs every
+    billing cycle — a utility-billing aggregator and the like. Same reference +
+    amount legitimately repeats across cycles, so for these vendors a duplicate is
+    only raised for a same-reference repeat inside a tight window (see
+    recurring_biller_patterns / recurring_biller_dup_window_days in rules.yaml)."""
+    return bool(billers) and any(p.search(str(vendor or "")) for p in billers)
+
+
 @rule("T1-01", "Duplicate payment — exact", requires="QB Vendor Transaction Detail")
 def duplicate_payment_exact(ctx: RunContext):
+    billers = ctx.config.patterns("recurring_biller_patterns")
+    biller_window = int(ctx.config.defaults.get("recurring_biller_dup_window_days", 0) or 0)
     for entity_id in ctx.active_entity_ids:
         pay = _payments(ctx, entity_id, DUP_TYPES)
-        pay = pay[pay["invoice_no"].notna() & (pay["invoice_no"].astype(str).str.strip() != "")]
-        groups = pay.groupby(["vendor_name", "amount", pay["invoice_no"].astype(str)])
-        for (vendor, amount, invoice), grp in groups:
+        # Group on the NORMALIZED reference so formatting-only variants of one
+        # document ("INV-77" vs "inv 77") share a group. T1-02 already compares
+        # normalized references and defers equal-amount/same-type pairs here, so a
+        # raw-string key would drop those between the two rules.
+        pay = pay.assign(_invoice_key=pay["invoice_no"].map(_norm_invoice))
+        pay = pay[pay["_invoice_key"] != ""]
+        groups = pay.groupby(["vendor_name", "amount", "_invoice_key"])
+        for (vendor, amount, _key), grp in groups:
+            # Recurring biller (a utility reusing one account/reference number every
+            # cycle): the same reference + amount legitimately repeats across months,
+            # so keep only entries within biller_window of a neighbour. A monthly
+            # cadence is normal billing, and this also keeps an innocent earlier bill
+            # from being attached to a genuine same-week double-pay (report just the
+            # close cluster, not the whole reference group).
+            if _is_recurring_biller(vendor, billers):
+                g = grp.sort_values("date")
+                near = g["date"].diff().dt.days <= biller_window
+                grp = g[near | near.shift(-1, fill_value=False)]
             # Same doc number + amount entered as both bill and payment is the
-            # normal bill→payment pair, not a duplicate
+            # normal bill→payment pair, not a duplicate.
             if len(grp) < 2 or grp["txn_type"].nunique() == len(grp):
                 continue
+            invoice = str(grp["invoice_no"].iloc[0])
             dates = ", ".join(grp["date"].dt.date.astype(str))
             yield Finding(
                 rule_id="T1-01",
@@ -72,6 +99,8 @@ def duplicate_payment_fuzzy(ctx: RunContext):
     cadence_min = int(ctx.config.param("fuzzy_dup_cadence_min_count"))
     processors = ctx.config.patterns("merchant_processor_patterns")
     fee_ceiling = float(ctx.config.defaults.get("merchant_fee_dup_ceiling", 0) or 0)
+    billers = ctx.config.patterns("recurring_biller_patterns")
+    biller_window = int(ctx.config.defaults.get("recurring_biller_dup_window_days", 0) or 0)
     for entity_id in ctx.active_entity_ids:
         pay = _payments(ctx, entity_id, DUP_TYPES).sort_values("date")
         seen_pairs: set[tuple[str, str]] = set()
@@ -81,6 +110,7 @@ def duplicate_payment_fuzzy(ctx: RunContext):
             # charges are cadence, not duplicate payments. Larger processor payments
             # still flag (only charges at/below the fee ceiling are exempt).
             processor = _is_processor(vendor, processors) and fee_ceiling > 0
+            biller = _is_recurring_biller(vendor, billers)
             # Two kinds of recurrence are cadence, not duplicates:
             #   * Low-frequency (rent, loan payments, dues): 3+ equal amounts
             #     spaced ≥ 15 days apart.
@@ -116,6 +146,16 @@ def duplicate_payment_fuzzy(ctx: RunContext):
                     if processor and a["amount"] <= fee_ceiling and b["amount"] <= fee_ceiling:
                         continue  # recurring per-settlement processing fees, not a duplicate
                     inv_a, inv_b = _norm_invoice(a["invoice_no"]), _norm_invoice(b["invoice_no"])
+                    # Recurring biller: only a same-account (same invoice/reference
+                    # number) repeat inside the tighter window counts as a duplicate.
+                    # A different reference (a different utility account) or a longer
+                    # gap is normal recurring billing. Payment rows carry no invoice
+                    # number (QB puts the check number there), so a bare payment pair
+                    # has no shared reference and is left to recurring billing here.
+                    if biller and (
+                            (b["date"] - a["date"]).days > biller_window
+                            or not (inv_a and inv_b and inv_a == inv_b)):
+                        continue
                     if not inv_a and not inv_b and a["amount"] in recurring_amounts \
                             and b["amount"] in recurring_amounts:
                         continue
