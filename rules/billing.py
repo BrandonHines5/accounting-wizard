@@ -54,22 +54,29 @@ def duplicate_payment_exact(ctx: RunContext):
     biller_window = int(ctx.config.defaults.get("recurring_biller_dup_window_days", 0) or 0)
     for entity_id in ctx.active_entity_ids:
         pay = _payments(ctx, entity_id, DUP_TYPES)
-        pay = pay[pay["invoice_no"].notna() & (pay["invoice_no"].astype(str).str.strip() != "")]
-        groups = pay.groupby(["vendor_name", "amount", pay["invoice_no"].astype(str)])
-        for (vendor, amount, invoice), grp in groups:
+        # Group on the NORMALIZED reference so formatting-only variants of one
+        # document ("INV-77" vs "inv 77") share a group. T1-02 already compares
+        # normalized references and defers equal-amount/same-type pairs here, so a
+        # raw-string key would drop those between the two rules.
+        pay = pay.assign(_invoice_key=pay["invoice_no"].map(_norm_invoice))
+        pay = pay[pay["_invoice_key"] != ""]
+        groups = pay.groupby(["vendor_name", "amount", "_invoice_key"])
+        for (vendor, amount, _key), grp in groups:
+            # Recurring biller (a utility reusing one account/reference number every
+            # cycle): the same reference + amount legitimately repeats across months,
+            # so keep only entries within biller_window of a neighbour. A monthly
+            # cadence is normal billing, and this also keeps an innocent earlier bill
+            # from being attached to a genuine same-week double-pay (report just the
+            # close cluster, not the whole reference group).
+            if _is_recurring_biller(vendor, billers):
+                g = grp.sort_values("date")
+                near = g["date"].diff().dt.days <= biller_window
+                grp = g[near | near.shift(-1, fill_value=False)]
             # Same doc number + amount entered as both bill and payment is the
-            # normal bill→payment pair, not a duplicate
+            # normal bill→payment pair, not a duplicate.
             if len(grp) < 2 or grp["txn_type"].nunique() == len(grp):
                 continue
-            # Recurring biller (a utility reusing one account/reference number every
-            # cycle): the same reference + amount legitimately repeats across months.
-            # The groupby has already pinned this cluster to one reference number
-            # (= one account), so only a repeat WITHIN the window is a duplicate —
-            # a monthly cadence (weeks apart) is normal billing, not a double-pay.
-            if _is_recurring_biller(vendor, billers):
-                gaps = grp["date"].sort_values().diff().dt.days.dropna()
-                if gaps.empty or gaps.min() > biller_window:
-                    continue
+            invoice = str(grp["invoice_no"].iloc[0])
             dates = ", ".join(grp["date"].dt.date.astype(str))
             yield Finding(
                 rule_id="T1-01",

@@ -175,6 +175,31 @@ def test_t1_01_non_biller_monthly_duplicate_still_flags(registry, config):
     assert len(findings) == 1 and findings[0].rule_id == "T1-01"
 
 
+def test_t1_01_recurring_biller_reports_only_in_window_cluster(registry, config):
+    # Monthly bills at the same reference PLUS a same-week double: the finding must
+    # name only the two close entries, not the innocent earlier monthly bill.
+    rows = [(UTIL, 66.92, "2026-04-08", "20276531", "bill", "APR"),
+            (UTIL, 66.92, "2026-05-08", "20276531", "bill", "MAY"),
+            (UTIL, 66.92, "2026-05-11", "20276531", "bill", "MAY2")]
+    findings = list(duplicate_payment_exact(
+        _ctx(txns=_billed(rows), registry=registry, config=config)))
+    assert len(findings) == 1
+    assert set(findings[0].transactions) == {"MAY", "MAY2"}   # APR excluded
+
+
+def test_t1_01_normalizes_reference_formatting_variants(registry, config):
+    # "INV-77" and "inv 77" are the same document with formatting noise. They must
+    # land in one T1-01 group — T1-02 defers same-normalized-reference equal pairs
+    # here, so raw-string grouping would drop the duplicate between both rules.
+    rows = [("Acme Roofing", 500.00, "2026-05-01", "INV-77", "bill", "B1"),
+            ("Acme Roofing", 500.00, "2026-05-04", "inv 77", "bill", "B2")]
+    findings = list(duplicate_payment_exact(
+        _ctx(txns=_billed(rows), registry=registry, config=config)))
+    assert len(findings) == 1
+    assert findings[0].rule_id == "T1-01" and str(findings[0].severity) == "CRITICAL"
+    assert set(findings[0].transactions) == {"B1", "B2"}
+
+
 def test_t1_02_recurring_biller_payment_pair_without_reference_suppressed(registry, config):
     # Check/ACH payments carry no invoice/reference number (QB stores the check
     # number there), so a bare payment pair can't be tied to the same account — for
