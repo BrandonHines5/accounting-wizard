@@ -18,6 +18,16 @@ const DISP_LABEL = {
   cleanup_needed: "Clean-up needed",
   escalated: "Escalate", open: "Leave open",
 };
+// Disposition-filter dropdown: the queue's own statuses first (Open, then the
+// still-active Escalated), then the ones the default view hides (Clean-up needed,
+// then cleared). Picking "Open" is the quick way to filter OUT everything you've
+// already marked — escalated, clean-up needed, and cleared alike.
+const DISP_FILTER_ORDER = ["open", "escalated", "cleanup_needed",
+                          "error_corrected", "legit"];
+const DISP_FILTER_LABEL = {
+  open: "Open", escalated: "Escalated", cleanup_needed: "Clean-up needed",
+  error_corrected: "Error corrected", legit: "Legit",
+};
 // Internal detail keys not worth showing the reviewer.
 const HIDE_KEYS = new Set(["sample", "stat_key", "bank_ref", "severity_note"]);
 
@@ -169,6 +179,7 @@ function Dashboard({ supabase, session }) {
   const [sevFilter, setSevFilter] = useState("ALL");
   const [typeFilter, setTypeFilter] = useState("ALL");
   const [recFilter, setRecFilter] = useState("ALL");
+  const [dispFilter, setDispFilter] = useState("ALL");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   // Multi-select for bulk disposition (fingerprints of not-yet-cleared cards).
@@ -216,6 +227,16 @@ function Dashboard({ supabase, session }) {
   }, [supabase]);
 
   useEffect(() => { load(); }, [load]);
+
+  // If the disposition currently filtered on is no longer present (e.g. the last
+  // escalated item was reopened), fall back to All so the view can't get stuck on
+  // an empty, and now hidden, filter.
+  useEffect(() => {
+    if (dispFilter !== "ALL" && findings !== null
+        && !findings.some((f) => f.disposition === dispFilter)) {
+      setDispFilter("ALL");
+    }
+  }, [dispFilter, findings]);
 
   // Persist the legend open/closed preference.
   useEffect(() => {
@@ -354,20 +375,31 @@ function Dashboard({ supabase, session }) {
   const recOptions = ["clear", "verify", "escalate"].filter((a) =>
     (findings || []).some((f) => f.recommended_action === a));
 
+  // Disposition values actually present, in a stable review order. Like the other
+  // dropdowns it never offers a guaranteed-empty choice.
+  const dispOptions = DISP_FILTER_ORDER.filter((v) =>
+    (findings || []).some((f) => f.disposition === v));
+
   const filtersActive =
     sevFilter !== "ALL" || typeFilter !== "ALL" || recFilter !== "ALL"
-    || !!fromDate || !!toDate;
+    || dispFilter !== "ALL" || !!fromDate || !!toDate;
   const clearFilters = () => {
     setSevFilter("ALL"); setTypeFilter("ALL"); setRecFilter("ALL");
-    setFromDate(""); setToDate("");
+    setDispFilter("ALL"); setFromDate(""); setToDate("");
   };
 
   // Filter → sort pipeline. The "show cleared" toggle gates first (its result is
   // the denominator for the "X of Y" count); the new controls then narrow by
   // criticality, type, and date window on top of that. Clean-up needed hides with
   // cleared: it no longer needs review attention, only bookkeeping.
-  const gated = (findings || []).filter(
-    (f) => showResolved || (!isCleared(f) && !isCleanup(f)));
+  // A specific Disposition pick takes over visibility: it can surface groups the
+  // default queue hides (clean-up needed, cleared) and, picking "Open", hides
+  // everything already marked (escalated / clean-up / cleared). With no pick, the
+  // "show cleared" gate applies as before.
+  const gated = (findings || []).filter((f) =>
+    dispFilter !== "ALL"
+      ? f.disposition === dispFilter
+      : showResolved || (!isCleared(f) && !isCleanup(f)));
   const filtered = gated.filter((f) => {
     if (sevFilter !== "ALL" && f.severity !== sevFilter) return false;
     if (typeFilter !== "ALL" && f.rule_id !== typeFilter) return false;
@@ -483,6 +515,17 @@ function Dashboard({ supabase, session }) {
                 {typeOptions.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </label>
+            {dispOptions.length > 1 && (
+              <label className="ctl">
+                <span title="Filter by the review status you set. Pick Open to hide items you've marked Escalated or Clean-up needed.">Disposition</span>
+                <select value={dispFilter} onChange={(e) => setDispFilter(e.target.value)}>
+                  <option value="ALL">All</option>
+                  {dispOptions.map((v) => (
+                    <option key={v} value={v}>{DISP_FILTER_LABEL[v]}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             {recOptions.length > 0 && (
               <label className="ctl">
                 <span title="Tier 3's recommended next step">AI recommends</span>
