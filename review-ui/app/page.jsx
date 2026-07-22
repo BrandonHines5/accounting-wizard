@@ -88,6 +88,24 @@ function dateCompare(a, b, desc) {
   return desc ? kb.localeCompare(ka) : ka.localeCompare(kb);
 }
 
+// A network-level fetch failure ("TypeError: Failed to fetch" in Chrome, "Load
+// failed" in Safari) means the request never got a response — classically the
+// FIRST request after the laptop wakes or the connection blips, with the very
+// next request working fine. Every RPC this app makes is idempotent (reads, or
+// setting a disposition to a fixed value), so retry once after a beat before
+// surfacing an error; callers then say plainly that the click was NOT saved
+// instead of leaking the raw TypeError.
+const isNetworkError = (e) =>
+  /failed to fetch|load failed|networkerror/i.test(e?.message || "");
+async function rpcWithRetry(supabase, fn, args) {
+  let res = await supabase.rpc(fn, args);
+  if (res.error && isNetworkError(res.error)) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    res = await supabase.rpc(fn, args);
+  }
+  return res;
+}
+
 export default function Page() {
   // Create the client in the browser only: it reads NEXT_PUBLIC_SUPABASE_* and
   // throws if they're unset, which would otherwise break `next build`
@@ -206,7 +224,7 @@ function Dashboard({ supabase, session }) {
     setReviewNote(null);
     setReviewInfo(null);
     // Gate first: the allowlist (currently the admin only) decides access.
-    const { data: ok, error: gateErr } = await supabase.rpc("is_reviewer");
+    const { data: ok, error: gateErr } = await rpcWithRetry(supabase, "is_reviewer");
     if (gateErr) { setError(gateErr.message); setAuthorized(false); return; }
     setAuthorized(!!ok);
     if (!ok) return;
@@ -215,7 +233,7 @@ function Dashboard({ supabase, session }) {
     // changes the sort) must not appear twice — fingerprints are React keys.
     const byFp = new Map();
     for (let offset = 0; ; offset += FETCH_PAGE) {
-      const { data, error } = await supabase.rpc("list_findings", {
+      const { data, error } = await rpcWithRetry(supabase, "list_findings", {
         p_limit: FETCH_PAGE, p_offset: offset,
       });
       if (error) { setError(error.message); setFindings([]); setSelected(new Set()); return; }
@@ -260,11 +278,22 @@ function Dashboard({ supabase, session }) {
     setReviewNote(null);
     setFindings((prev) =>
       prev.map((f) => (f.fingerprint === fp ? { ...f, _busy: true } : f)));
-    const { error } = await supabase.rpc("set_finding_disposition", {
+    const { error } = await rpcWithRetry(supabase, "set_finding_disposition", {
       p_fingerprint: fp, p_disposition: value, p_note: trimmed || null,
     });
-    // load() clears the error banner, so set the message AFTER reloading.
-    if (error) { await load(); setError(error.message); return; }
+    // load() clears the error banner, so set the message AFTER reloading. A
+    // network-level failure (already retried once) gets a plain-language message:
+    // the raw "TypeError: Failed to fetch" doesn't tell the reviewer the one
+    // thing that matters — whether the click saved (it did not).
+    if (error) {
+      await load();
+      setError(isNetworkError(error)
+        ? `Couldn't reach the server — that ${value === "open" ? "Reopen"
+            : DISP_LABEL[value] || value} click was NOT saved. `
+          + "Check your connection and click it again."
+        : error.message);
+      return;
+    }
     setFindings((prev) =>
       prev.map((f) => (f.fingerprint === fp
         ? { ...f, disposition: value, disposition_note: trimmed || null,
@@ -313,11 +342,21 @@ function Dashboard({ supabase, session }) {
       prev.map((f) => (visible.has(f.fingerprint) && selected.has(f.fingerprint)
         ? { ...f, _busy: true } : f)));
     for (let start = 0; start < fps.length; start += 500) {
-      const { error } = await supabase.rpc("set_findings_disposition_bulk", {
+      const { error } = await rpcWithRetry(supabase, "set_findings_disposition_bulk", {
         p_fingerprints: fps.slice(start, start + 500),
         p_disposition: value, p_note: trimmed || null,
       });
-      if (error) { await load(); setError(error.message); return; }
+      // Chunks before this one are already saved; the reload shows true state, so
+      // a network failure's message says what to do: re-select and re-apply.
+      // Re-applying a chunk that did save is a harmless idempotent no-op.
+      if (error) {
+        await load();
+        setError(isNetworkError(error)
+          ? "Couldn't reach the server — part of the bulk disposition was NOT saved. "
+            + "Check your connection, then re-select and apply again."
+          : error.message);
+        return;
+      }
     }
     setBulkNote("");
     let reviewMsg = null;
