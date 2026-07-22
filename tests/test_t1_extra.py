@@ -298,6 +298,32 @@ def test_t1_02_bills_supporting_two_of_three_payments_leave_third_critical(regis
         == {frozenset({"P1", "P3"}), frozenset({"P2", "P3"})}
 
 
+def test_t1_02_statement_checks_paying_many_invoices_reconcile(registry, config):
+    # Month-end statement checks pay MANY invoices at once (a lumber yard or
+    # hauling statement). invoice_match_max_combo covers statement-sized
+    # combinations, so two equal statement checks a week apart reconcile to
+    # their own disjoint 5-invoice sets instead of flagging as duplicates.
+    rows = [("Waddles Hauling", 500.00, "2025-04-10", "7101", "bill", "B1"),
+            ("Waddles Hauling", 450.00, "2025-04-10", "7102", "bill", "B2"),
+            ("Waddles Hauling", 400.00, "2025-04-10", "7103", "bill", "B3"),
+            ("Waddles Hauling", 375.00, "2025-04-10", "7104", "bill", "B4"),
+            ("Waddles Hauling", 300.00, "2025-04-10", "7105", "bill", "B5"),
+            ("Waddles Hauling", 2025.00, "2025-04-16", None, "bill_payment", "P1"),
+            ("Waddles Hauling", 480.00, "2025-04-20", "7106", "bill", "B6"),
+            ("Waddles Hauling", 470.00, "2025-04-20", "7107", "bill", "B7"),
+            ("Waddles Hauling", 425.00, "2025-04-20", "7108", "bill", "B8"),
+            ("Waddles Hauling", 350.00, "2025-04-20", "7109", "bill", "B9"),
+            ("Waddles Hauling", 300.00, "2025-04-20", "7110", "bill", "B10"),
+            ("Waddles Hauling", 2025.00, "2025-04-23", None, "bill_payment", "P2")]
+    findings = list(duplicate_payment_fuzzy(
+        _ctx(txns=_billed(rows), registry=registry, config=config)))
+    assert len(findings) == 1
+    f = findings[0]
+    assert str(f.severity) == "MEDIUM" and set(f.transactions) == {"P1", "P2"}
+    for ref in ("7101", "7105", "7106", "7110"):
+        assert ref in f.details["invoice_sets"]
+
+
 def test_t1_02_reentered_same_refs_never_count_as_support(registry, config):
     # The vendor's bills were entered TWICE with the same invoice numbers — two
     # payments "reconciling" to re-entries of the same refs is the double-pay this

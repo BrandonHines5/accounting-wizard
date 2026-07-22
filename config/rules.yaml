@@ -55,7 +55,19 @@ defaults:
   # payment (batch check) may cover in the sum match.
   invoice_match_amount_tolerance: 0.01
   invoice_match_lookback_days: 120
-  invoice_match_max_combo: 4
+  # Most invoices one payment may cover in the sum match. Month-end STATEMENT
+  # checks (lumber yard, hauling) pay many invoices at once, so this covers
+  # statement-sized batches; even larger statements still reconcile through the
+  # outstanding-balance (on-account) path rather than precise attribution.
+  invoice_match_max_combo: 8
+  # How many days AFTER a payment a bill may be dated and still count as its
+  # support. QBO banking-feed matching routinely applies a cut check to a bill
+  # entered/dated days later (e.g. check 6/24 covering the next service period's
+  # bill dated 7/5), so a tight grace turns those into "payment without matching
+  # invoice" noise. Beyond the grace, paying a not-yet-dated bill still flags —
+  # that's the prepayment control working. Also used by T1-02's invoice-set
+  # reconciliation, which reuses this matcher.
+  invoice_match_future_grace_days: 10
 
   # T1-07: weekdays AP batches normally run (0=Mon … 6=Sun).
   # Empty = rule disabled. Hines data shows Wednesday-dominant cadence

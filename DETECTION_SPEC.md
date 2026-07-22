@@ -26,7 +26,7 @@ active entities. Severity escalation for nonprofit entities keys off
 | T1-06 | Missing PO | Bill on a PO-required cost code with no PO reference | Adaptive/BT + QB | MEDIUM |
 | T1-07 | Payment outside AP run | Check/ACH cut outside normal AP batch days | QB Check Detail | MEDIUM |
 | T1-08 | Manual check on AP vendor | Handwritten/manual check to a vendor normally paid via Adaptive workflow | QB | HIGH |
-| T1-09 | Payment without matching invoice | Per vendor with bills, each payment must reconcile to one bill or a sum of bills (amount-based; QB doesn't link payment→bill). Flags payments matching no invoice/combination that exceed outstanding invoices (unsupported/overpaid/double-paid). Progress/partial payments not flagged. | QB Vendor Transaction Detail | MEDIUM |
+| T1-09 | Payment without matching invoice | Per vendor with bills, each payment must reconcile to one bill or a sum of bills (amount-based; QB doesn't link payment→bill). Bills dated up to `invoice_match_future_grace_days` (default 10) after the payment count as support — QBO banking-feed matching applies a cut check to bills entered/dated days later. Flags payments matching no invoice/combination that exceed outstanding invoices (unsupported/overpaid/double-paid). Progress/partial payments not flagged. | QB Vendor Transaction Detail | MEDIUM |
 
 ### Vendor master hygiene
 
