@@ -198,6 +198,7 @@ function Dashboard({ supabase, session }) {
   const [typeFilter, setTypeFilter] = useState("ALL");
   const [recFilter, setRecFilter] = useState("ALL");
   const [dispFilter, setDispFilter] = useState("ALL");
+  const [entityFilter, setEntityFilter] = useState("ALL");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   // Multi-select for bulk disposition (fingerprints of not-yet-cleared cards).
@@ -255,6 +256,14 @@ function Dashboard({ supabase, session }) {
       setDispFilter("ALL");
     }
   }, [dispFilter, findings]);
+  // Same guard for the Company filter: if a reload no longer contains the chosen
+  // entity, fall back to All rather than pinning an empty view to a hidden filter.
+  useEffect(() => {
+    if (entityFilter !== "ALL" && findings !== null
+        && !findings.some((f) => (f.entity_ids || []).includes(entityFilter))) {
+      setEntityFilter("ALL");
+    }
+  }, [entityFilter, findings]);
 
   // Persist the legend open/closed preference.
   useEffect(() => {
@@ -419,12 +428,19 @@ function Dashboard({ supabase, session }) {
   const dispOptions = DISP_FILTER_ORDER.filter((v) =>
     (findings || []).some((f) => f.disposition === v));
 
+  // Companies (registry entity ids) present in the loaded findings. A finding can
+  // touch several entities (inter-company rules), so the filter tests membership,
+  // not equality — the cards already label themselves with these same ids.
+  const entityOptions = [
+    ...new Set((findings || []).flatMap((f) => f.entity_ids || [])),
+  ].sort();
+
   const filtersActive =
     sevFilter !== "ALL" || typeFilter !== "ALL" || recFilter !== "ALL"
-    || dispFilter !== "ALL" || !!fromDate || !!toDate;
+    || dispFilter !== "ALL" || entityFilter !== "ALL" || !!fromDate || !!toDate;
   const clearFilters = () => {
     setSevFilter("ALL"); setTypeFilter("ALL"); setRecFilter("ALL");
-    setDispFilter("ALL"); setFromDate(""); setToDate("");
+    setDispFilter("ALL"); setEntityFilter("ALL"); setFromDate(""); setToDate("");
   };
 
   // Filter → sort pipeline. The "show cleared" toggle gates first (its result is
@@ -443,6 +459,7 @@ function Dashboard({ supabase, session }) {
     if (sevFilter !== "ALL" && f.severity !== sevFilter) return false;
     if (typeFilter !== "ALL" && f.rule_id !== typeFilter) return false;
     if (recFilter !== "ALL" && f.recommended_action !== recFilter) return false;
+    if (entityFilter !== "ALL" && !(f.entity_ids || []).includes(entityFilter)) return false;
     if (fromDate || toDate) {
       const k = dayKeyOf(f);
       if (!k) return false;                 // no transaction date → outside any window
@@ -540,6 +557,15 @@ function Dashboard({ supabase, session }) {
                 ))}
               </select>
             </label>
+            {entityOptions.length > 1 && (
+              <label className="ctl">
+                <span title="Show only findings involving this company">Company</span>
+                <select value={entityFilter} onChange={(e) => setEntityFilter(e.target.value)}>
+                  <option value="ALL">All</option>
+                  {entityOptions.map((id) => <option key={id} value={id}>{id}</option>)}
+                </select>
+              </label>
+            )}
             <label className="ctl">
               <span>Criticality</span>
               <select value={sevFilter} onChange={(e) => setSevFilter(e.target.value)}>
