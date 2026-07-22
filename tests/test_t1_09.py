@@ -6,6 +6,7 @@ The rule is invoked directly to keep the assertions about T1-09 alone.
 """
 import pandas as pd
 
+from core.config import RulesConfig
 from core.model import TRANSACTION_COLUMNS, VENDOR_COLUMNS, validate_transactions
 from rules.billing import payment_without_matching_invoice
 from rules.engine import RunContext
@@ -171,3 +172,33 @@ def test_future_dated_bill_beyond_grace_still_flags(registry, config):
     hits = _run(rows, registry, config)
     assert len(hits) == 1 and hits[0].rule_id == "T1-09"
     assert hits[0].transactions == ["P1"]
+
+
+def test_future_dated_bill_at_exact_grace_boundary_supports_payment(registry, config):
+    # Inclusive boundary: a bill dated EXACTLY invoice_match_future_grace_days
+    # (10) after the payment still counts as support.
+    rows = [
+        _txn("B1", "Pest Co", "bill", "2026-06-18", 217.91),
+        _txn("B2", "Pest Co", "bill", "2026-06-18", 217.91),
+        _txn("B3", "Pest Co", "bill", "2026-06-18", 196.01),
+        _txn("B4", "Pest Co", "bill", "2026-07-04", 206.96),   # exactly 10 days after
+        _txn("P1", "Pest Co", "bill_payment", "2026-06-24", 838.79),
+    ]
+    assert _run(rows, registry, config) == []
+
+
+def test_future_grace_is_configurable(registry, config):
+    # The grace is a rules.yaml knob, not a constant: tightened to 3 days, the
+    # +8-day bill that the default (10) accepts is no longer support.
+    tight = RulesConfig({"defaults": {**config.defaults,
+                                      "invoice_match_future_grace_days": 3}})
+    rows = [
+        _txn("B1", "Pest Co", "bill", "2026-06-18", 217.91),
+        _txn("B2", "Pest Co", "bill", "2026-06-18", 217.91),
+        _txn("B3", "Pest Co", "bill", "2026-06-18", 196.01),
+        _txn("B4", "Pest Co", "bill", "2026-07-02", 206.96),   # +8 days: ok at 10, not at 3
+        _txn("P1", "Pest Co", "bill_payment", "2026-06-24", 838.79),
+    ]
+    assert _run(rows, registry, config) == []
+    hits = _run(rows, registry, tight)
+    assert len(hits) == 1 and hits[0].rule_id == "T1-09"

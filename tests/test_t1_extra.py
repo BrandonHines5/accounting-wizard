@@ -320,8 +320,13 @@ def test_t1_02_statement_checks_paying_many_invoices_reconcile(registry, config)
     assert len(findings) == 1
     f = findings[0]
     assert str(f.severity) == "MEDIUM" and set(f.transactions) == {"P1", "P2"}
-    for ref in ("7101", "7105", "7106", "7110"):
-        assert ref in f.details["invoice_sets"]
+    # The annotation must be a complete disjoint partition of the two statements:
+    # five refs a side, no overlap, all ten invoices accounted for.
+    left, right = f.details["invoice_sets"].split(" vs ")
+    left_refs, right_refs = set(left.split("+")), set(right.split("+"))
+    assert len(left_refs) == len(right_refs) == 5
+    assert left_refs.isdisjoint(right_refs)
+    assert left_refs | right_refs == {str(n) for n in range(7101, 7111)}
 
 
 def test_t1_02_reentered_same_refs_never_count_as_support(registry, config):
