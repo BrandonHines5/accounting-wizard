@@ -234,6 +234,62 @@ def test_t1_02_recurring_biller_different_account_within_window_suppressed(regis
     assert findings == []
 
 
+# ---- T1-02 distinct-invoice-set reconciliation ----------------------------------
+# The Jurado pattern: two batch checks a week apart for the same total, each
+# actually paying its own pair of bills — but QB exports don't carry payment→bill
+# application links, so the pair looks like a textbook double-pay. When the
+# vendor's bills reconcile each payment to its own disjoint set of distinct
+# invoice refs, the finding names the refs and drops to MEDIUM.
+
+def test_t1_02_pair_reconciling_to_distinct_invoice_sets_downgrades(registry, config):
+    rows = [("Jurado Framing", 7213.80, "2025-10-08", "171307", "bill", "B1"),
+            ("Jurado Framing", 6138.45, "2025-10-08", "171308", "bill", "B2"),
+            ("Jurado Framing", 13352.25, "2025-10-15", None, "bill_payment", "P1"),
+            ("Jurado Framing", 7213.80, "2025-10-15", "171310", "bill", "B3"),
+            ("Jurado Framing", 6138.45, "2025-10-15", "171311", "bill", "B4"),
+            ("Jurado Framing", 13352.25, "2025-10-22", None, "bill_payment", "P2")]
+    findings = list(duplicate_payment_fuzzy(
+        _ctx(txns=_billed(rows), registry=registry, config=config)))
+    assert len(findings) == 1
+    f = findings[0]
+    assert str(f.severity) == "MEDIUM" and set(f.transactions) == {"P1", "P2"}
+    for ref in ("171307", "171308", "171310", "171311"):
+        assert ref in f.details["invoice_sets"]
+    assert " vs " in f.details["invoice_sets"]
+    assert "reconciles to its own distinct invoices" in f.question
+
+
+def test_t1_02_pair_without_second_invoice_set_stays_critical(registry, config):
+    # Only ONE pair of bills on file: the second payment reconciles to nothing,
+    # which is exactly a possible double-pay — full severity, no annotation.
+    rows = [("Jurado Framing", 7213.80, "2025-10-08", "171307", "bill", "B1"),
+            ("Jurado Framing", 6138.45, "2025-10-08", "171308", "bill", "B2"),
+            ("Jurado Framing", 13352.25, "2025-10-15", None, "bill_payment", "P1"),
+            ("Jurado Framing", 13352.25, "2025-10-22", None, "bill_payment", "P2")]
+    findings = list(duplicate_payment_fuzzy(
+        _ctx(txns=_billed(rows), registry=registry, config=config)))
+    assert len(findings) == 1
+    f = findings[0]
+    assert str(f.severity) == "CRITICAL" and "invoice_sets" not in f.details
+
+
+def test_t1_02_reentered_same_refs_never_count_as_support(registry, config):
+    # The vendor's bills were entered TWICE with the same invoice numbers — two
+    # payments "reconciling" to re-entries of the same refs is the double-pay this
+    # rule exists to catch, so the refs must not read as support: stays CRITICAL.
+    rows = [("Jurado Framing", 7213.80, "2025-10-08", "171307", "bill", "B1"),
+            ("Jurado Framing", 6138.45, "2025-10-08", "171308", "bill", "B2"),
+            ("Jurado Framing", 7213.80, "2025-10-15", "171307", "bill", "B3"),
+            ("Jurado Framing", 6138.45, "2025-10-15", "171308", "bill", "B4"),
+            ("Jurado Framing", 13352.25, "2025-10-15", None, "bill_payment", "P1"),
+            ("Jurado Framing", 13352.25, "2025-10-22", None, "bill_payment", "P2")]
+    findings = list(duplicate_payment_fuzzy(
+        _ctx(txns=_billed(rows), registry=registry, config=config)))
+    pair = [f for f in findings if set(f.transactions) == {"P1", "P2"}]
+    assert len(pair) == 1
+    assert str(pair[0].severity) == "CRITICAL" and "invoice_sets" not in pair[0].details
+
+
 # ---- T1-30 low-risk large-supplier credit-memo exclusion ------------------------
 
 def _credits(rows):
