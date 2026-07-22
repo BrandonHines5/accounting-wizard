@@ -64,12 +64,13 @@ def _bill_pool(grp: pd.DataFrame) -> list[dict]:
 
 
 def _combo_match(pay: dict, avail: list[dict], tol_c: int, lookback: int,
-                 max_combo: int) -> list[dict] | None:
+                 max_combo: int, grace: int = 5) -> list[dict] | None:
     """One payment → a single bill or a combination (2..max_combo) of the
-    available bills by amount, mirroring T1-09's matcher: same lookback window
-    (small grace for entry order) and the same recent-12 cap on combinations."""
+    available bills by amount, mirroring T1-09's matcher: same lookback window,
+    same future-dated-bill grace (`invoice_match_future_grace_days`), and the
+    same recent-12 cap on combinations."""
     pc = round(abs(float(pay["amount"])) * 100)
-    cands = [x for x in avail if -5 <= (pay["date"] - x["date"]).days <= lookback]
+    cands = [x for x in avail if -grace <= (pay["date"] - x["date"]).days <= lookback]
     single = next((x for x in sorted(cands, key=lambda x: abs(x["cents"] - pc))
                    if abs(x["cents"] - pc) <= tol_c), None)
     if single:
@@ -83,7 +84,8 @@ def _combo_match(pay: dict, avail: list[dict], tol_c: int, lookback: int,
 
 
 def _distinct_invoice_sets(a: dict, b: dict, pool: list[dict], consumed: set,
-                           tol_c: int, lookback: int, max_combo: int):
+                           tol_c: int, lookback: int, max_combo: int,
+                           grace: int = 5):
     """Can each payment of a same-amount pair be reconciled to its OWN distinct
     set of invoices? (The Jurado pattern: two $13,352.25 checks a week apart,
     each actually paying a different pair of bills — but QB's flat exports don't
@@ -109,12 +111,12 @@ def _distinct_invoice_sets(a: dict, b: dict, pool: list[dict], consumed: set,
     if len(avail) < 2:
         return None
     for first, second in ((a, b), (b, a)):
-        combo_first = _combo_match(first, avail, tol_c, lookback, max_combo)
+        combo_first = _combo_match(first, avail, tol_c, lookback, max_combo, grace)
         if not combo_first:
             continue
         used = {x["i"] for x in combo_first}
         combo_second = _combo_match(second, [x for x in avail if x["i"] not in used],
-                                    tol_c, lookback, max_combo)
+                                    tol_c, lookback, max_combo, grace)
         if not combo_second:
             continue
         if {x["norm"] for x in combo_first} & {x["norm"] for x in combo_second}:
@@ -184,6 +186,7 @@ def duplicate_payment_fuzzy(ctx: RunContext):
     inv_tol_c = round(float(ctx.config.param("invoice_match_amount_tolerance")) * 100)
     inv_lookback = int(ctx.config.param("invoice_match_lookback_days"))
     inv_max_combo = int(ctx.config.param("invoice_match_max_combo"))
+    inv_grace = int(ctx.config.defaults.get("invoice_match_future_grace_days", 5) or 0)
     for entity_id in ctx.active_entity_ids:
         pay = _payments(ctx, entity_id, DUP_TYPES).sort_values("date")
         seen_pairs: set[tuple[str, str]] = set()
@@ -300,7 +303,8 @@ def duplicate_payment_fuzzy(ctx: RunContext):
                         if bill_pool is None:
                             bill_pool = _bill_pool(grp)
                         sets = _distinct_invoice_sets(a, b, bill_pool, bills_consumed,
-                                                      inv_tol_c, inv_lookback, inv_max_combo)
+                                                      inv_tol_c, inv_lookback,
+                                                      inv_max_combo, inv_grace)
                         if sets:
                             refs_a, refs_b = sets
                             severity = min(severity, Severity.MEDIUM)
@@ -466,6 +470,7 @@ def payment_without_matching_invoice(ctx: RunContext):
     tol = float(ctx.config.param("invoice_match_amount_tolerance"))
     lookback = int(ctx.config.param("invoice_match_lookback_days"))
     max_combo = int(ctx.config.param("invoice_match_max_combo"))
+    grace = int(ctx.config.defaults.get("invoice_match_future_grace_days", 5) or 0)
     tol_c = round(tol * 100)
     for entity_id in ctx.active_entity_ids:
         df = ctx.entity_transactions(entity_id)
@@ -493,10 +498,12 @@ def payment_without_matching_invoice(ctx: RunContext):
                 pc = round(abs(float(p["amount"])) * 100)
                 if pc <= 0:
                     continue
-                # Bills available to this payment: unconsumed, dated on/before it
-                # (small grace for entry order), within the lookback window.
+                # Bills available to this payment: unconsumed, within the lookback
+                # window, dated on/before it or up to `grace` days after
+                # (invoice_match_future_grace_days — QBO banking-feed matches apply
+                # a cut check to bills entered/dated days later).
                 cands = [b for b in open_bills if not b["used"]
-                         and -5 <= (p["date"] - b["date"]).days <= lookback]
+                         and -grace <= (p["date"] - b["date"]).days <= lookback]
                 # 1) single invoice
                 single = next((b for b in sorted(cands, key=lambda b: (abs(b["cents"] - pc), b["date"]))
                                if abs(b["cents"] - pc) <= tol_c), None)
@@ -521,7 +528,7 @@ def payment_without_matching_invoice(ctx: RunContext):
                 # window) → on-account / progress / net-of-credit payment. Consume
                 # oldest bills up to the payment so the balance rolls forward.
                 credit_c = sum(c["cents"] for c in credits
-                               if -5 <= (p["date"] - c["date"]).days <= lookback)
+                               if -grace <= (p["date"] - c["date"]).days <= lookback)
                 outstanding = sum(b["cents"] for b in cands) - credit_c
                 if pc <= outstanding + tol_c:
                     # Partial consumption: only the paid amount comes off the
