@@ -48,6 +48,84 @@ def _is_recurring_biller(vendor, billers: list) -> bool:
     return bool(billers) and any(p.search(str(vendor or "")) for p in billers)
 
 
+def _bill_pool(grp: pd.DataFrame) -> list[dict]:
+    """The vendor's bill rows as consumable combo-match units. Indexed (`i`) so
+    two bills that LOOK identical (same amount/date/ref — e.g. a re-entered
+    invoice) stay distinct rows a match can consume separately."""
+    bills = grp[(grp["txn_type"] == "bill") & grp["amount"].notna() & grp["date"].notna()]
+    pool = []
+    for i, (_, r) in enumerate(bills.iterrows()):
+        norm = _norm_invoice(r["invoice_no"])
+        if not norm:
+            continue                       # a ref-less bill can't evidence a distinct invoice
+        pool.append({"i": i, "cents": round(abs(float(r["amount"])) * 100),
+                     "date": r["date"], "ref": str(r["invoice_no"]).strip(), "norm": norm})
+    return pool
+
+
+def _combo_match(pay: dict, avail: list[dict], tol_c: int, lookback: int,
+                 max_combo: int) -> list[dict] | None:
+    """One payment → a single bill or a combination (2..max_combo) of the
+    available bills by amount, mirroring T1-09's matcher: same lookback window
+    (small grace for entry order) and the same recent-12 cap on combinations."""
+    pc = round(abs(float(pay["amount"])) * 100)
+    cands = [x for x in avail if -5 <= (pay["date"] - x["date"]).days <= lookback]
+    single = next((x for x in sorted(cands, key=lambda x: abs(x["cents"] - pc))
+                   if abs(x["cents"] - pc) <= tol_c), None)
+    if single:
+        return [single]
+    recent = sorted(cands, key=lambda x: x["date"], reverse=True)[:12]
+    for r in range(2, max_combo + 1):
+        for combo in combinations(recent, r):
+            if abs(sum(x["cents"] for x in combo) - pc) <= tol_c:
+                return list(combo)
+    return None
+
+
+def _distinct_invoice_sets(a: dict, b: dict, pool: list[dict], consumed: set,
+                           tol_c: int, lookback: int, max_combo: int):
+    """Can each payment of a same-amount pair be reconciled to its OWN distinct
+    set of invoices? (The Jurado pattern: two $13,352.25 checks a week apart,
+    each actually paying a different pair of bills — but QB's flat exports don't
+    carry the payment→bill application links, so the pair looks like a double-pay.)
+
+    Matches the first payment to a combination of the vendor's bills, then the
+    second from the REMAINING bills (both orders tried), and requires the two
+    sets' normalized refs to be disjoint — two payments matching re-entries of the
+    SAME invoice numbers are exactly the double-pay this rule exists to catch,
+    so they never count as support. Attribution is amount-inference, not QB's
+    actual application (which the export lacks); the conclusion — two disjoint
+    invoice sets exist to cover both payments — is what the finding reports.
+
+    `consumed` holds bill indices already claimed by this vendor's EARLIER
+    reconciled pairs, and successful matches are added to it (T1-09's used-bill
+    pattern): a finite bill pool must not re-support every pairwise combination
+    of 3+ equal payments when it can only explain some of them — the pair
+    touching the unsupported payment must stay at full severity.
+
+    Returns (refs_a, refs_b) aligned to (a, b), or None. Mutates `consumed` on
+    success."""
+    avail = [x for x in pool if x["i"] not in consumed]
+    if len(avail) < 2:
+        return None
+    for first, second in ((a, b), (b, a)):
+        combo_first = _combo_match(first, avail, tol_c, lookback, max_combo)
+        if not combo_first:
+            continue
+        used = {x["i"] for x in combo_first}
+        combo_second = _combo_match(second, [x for x in avail if x["i"] not in used],
+                                    tol_c, lookback, max_combo)
+        if not combo_second:
+            continue
+        if {x["norm"] for x in combo_first} & {x["norm"] for x in combo_second}:
+            continue                       # same ref on both sides = possible re-entry
+        consumed |= used | {x["i"] for x in combo_second}
+        refs_a = sorted(x["ref"] for x in (combo_first if first is a else combo_second))
+        refs_b = sorted(x["ref"] for x in (combo_second if first is a else combo_first))
+        return refs_a, refs_b
+    return None
+
+
 @rule("T1-01", "Duplicate payment — exact", requires="QB Vendor Transaction Detail")
 def duplicate_payment_exact(ctx: RunContext):
     billers = ctx.config.patterns("recurring_biller_patterns")
@@ -101,6 +179,11 @@ def duplicate_payment_fuzzy(ctx: RunContext):
     fee_ceiling = float(ctx.config.defaults.get("merchant_fee_dup_ceiling", 0) or 0)
     billers = ctx.config.patterns("recurring_biller_patterns")
     biller_window = int(ctx.config.defaults.get("recurring_biller_dup_window_days", 0) or 0)
+    # T1-09's reconciliation parameters, reused for the distinct-invoice-set
+    # check on no-doc pairs (see _distinct_invoice_sets).
+    inv_tol_c = round(float(ctx.config.param("invoice_match_amount_tolerance")) * 100)
+    inv_lookback = int(ctx.config.param("invoice_match_lookback_days"))
+    inv_max_combo = int(ctx.config.param("invoice_match_max_combo"))
     for entity_id in ctx.active_entity_ids:
         pay = _payments(ctx, entity_id, DUP_TYPES).sort_values("date")
         seen_pairs: set[tuple[str, str]] = set()
@@ -121,6 +204,11 @@ def duplicate_payment_fuzzy(ctx: RunContext):
             #     ~N²/2 CRITICALs. Those pairs are suppressed and each cluster
             #     surfaces as ONE INFO summary below instead (a compromised card
             #     also looks like recurring charges, so it stays visible).
+            # Bill pool for the distinct-invoice-set check, built lazily on the
+            # first qualifying pair; `bills_consumed` spans ALL of this vendor's
+            # pairs so one bill never supports two different reconciliations.
+            bill_pool = None
+            bills_consumed: set = set()
             recurring_amounts = set()
             cadence_clusters = []
             for amount, agrp in grp.groupby("amount"):
@@ -189,19 +277,46 @@ def duplicate_payment_fuzzy(ctx: RunContext):
                     both_card = a["txn_type"] == "card" and b["txn_type"] == "card"
                     same_day_equal = (a["date"].date() == b["date"].date()
                                       and a["amount"] == b["amount"])
+                    severity = (Severity.MEDIUM if both_card and not same_day_equal
+                                else Severity.CRITICAL)
+                    question = (
+                        f"Two payments to {vendor} look like possible duplicates: "
+                        f"${a['amount']:,.2f} on {a['date'].date()} "
+                        f"(doc {a['invoice_no'] or '—'}) and ${b['amount']:,.2f} on "
+                        f"{b['date'].date()} (doc {b['invoice_no'] or '—'}). "
+                        "Are these for distinct obligations?"
+                    )
+                    details = {"vendor": vendor}
+                    # A no-doc AP pair (a payment's Num is its check number, so the
+                    # invoice field is empty by construction) may still be fully
+                    # supported: batch checks paying different bill sets that happen
+                    # to sum equal — weekly sub draws with identical amounts. When
+                    # each payment reconciles to its own disjoint set of distinct
+                    # invoice refs, name the refs and downgrade to MEDIUM: still
+                    # reviewable (the invoices themselves could be re-entries), but
+                    # not a top-of-queue double-pay alarm.
+                    if not inv_a and not inv_b and a["txn_type"] in AP_TYPES \
+                            and b["txn_type"] in AP_TYPES:
+                        if bill_pool is None:
+                            bill_pool = _bill_pool(grp)
+                        sets = _distinct_invoice_sets(a, b, bill_pool, bills_consumed,
+                                                      inv_tol_c, inv_lookback, inv_max_combo)
+                        if sets:
+                            refs_a, refs_b = sets
+                            severity = min(severity, Severity.MEDIUM)
+                            question += (
+                                f" Each payment reconciles to its own distinct invoices "
+                                f"({'+'.join(refs_a)} vs {'+'.join(refs_b)}) — are those "
+                                "invoices separate obligations, not the same invoice "
+                                "re-entered?"
+                            )
+                            details["invoice_sets"] = f"{'+'.join(refs_a)} vs {'+'.join(refs_b)}"
                     yield Finding(
                         rule_id="T1-02",
-                        severity=(Severity.MEDIUM if both_card and not same_day_equal
-                                  else Severity.CRITICAL),
+                        severity=severity,
                         entity_ids=[entity_id],
-                        question=(
-                            f"Two payments to {vendor} look like possible duplicates: "
-                            f"${a['amount']:,.2f} on {a['date'].date()} "
-                            f"(doc {a['invoice_no'] or '—'}) and ${b['amount']:,.2f} on "
-                            f"{b['date'].date()} (doc {b['invoice_no'] or '—'}). "
-                            "Are these for distinct obligations?"
-                        ),
-                        details={"vendor": vendor},
+                        question=question,
+                        details=details,
                         transactions=[str(a["source_id"]), str(b["source_id"])],
                     )
             # One summary per high-frequency cadence cluster, in place of the
