@@ -256,13 +256,14 @@ function Dashboard({ supabase, session }) {
       setDispFilter("ALL");
     }
   }, [dispFilter, findings]);
-  // Same guard for the Company filter: if a reload no longer contains the chosen
-  // entity, fall back to All rather than pinning an empty view to a hidden filter.
+  // Same guard for the Company filter: fall back to All when the chosen entity is
+  // gone — or when only one (or zero) company remains, because the dropdown hides
+  // itself at ≤ 1 option and a hidden control must never keep narrowing the list
+  // (findings with no entity_ids would silently vanish behind it).
   useEffect(() => {
-    if (entityFilter !== "ALL" && findings !== null
-        && !findings.some((f) => (f.entity_ids || []).includes(entityFilter))) {
-      setEntityFilter("ALL");
-    }
+    if (entityFilter === "ALL" || findings === null) return;
+    const ids = new Set(findings.flatMap((f) => f.entity_ids || []));
+    if (ids.size <= 1 || !ids.has(entityFilter)) setEntityFilter("ALL");
   }, [entityFilter, findings]);
 
   // Persist the legend open/closed preference.

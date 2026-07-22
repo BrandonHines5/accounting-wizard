@@ -82,8 +82,8 @@ def _combo_match(pay: dict, avail: list[dict], tol_c: int, lookback: int,
     return None
 
 
-def _distinct_invoice_sets(a: dict, b: dict, grp: pd.DataFrame, tol_c: int,
-                           lookback: int, max_combo: int):
+def _distinct_invoice_sets(a: dict, b: dict, pool: list[dict], consumed: set,
+                           tol_c: int, lookback: int, max_combo: int):
     """Can each payment of a same-amount pair be reconciled to its OWN distinct
     set of invoices? (The Jurado pattern: two $13,352.25 checks a week apart,
     each actually paying a different pair of bills — but QB's flat exports don't
@@ -97,21 +97,29 @@ def _distinct_invoice_sets(a: dict, b: dict, grp: pd.DataFrame, tol_c: int,
     actual application (which the export lacks); the conclusion — two disjoint
     invoice sets exist to cover both payments — is what the finding reports.
 
-    Returns (refs_a, refs_b) aligned to (a, b), or None."""
-    pool = _bill_pool(grp)
-    if len(pool) < 2:
+    `consumed` holds bill indices already claimed by this vendor's EARLIER
+    reconciled pairs, and successful matches are added to it (T1-09's used-bill
+    pattern): a finite bill pool must not re-support every pairwise combination
+    of 3+ equal payments when it can only explain some of them — the pair
+    touching the unsupported payment must stay at full severity.
+
+    Returns (refs_a, refs_b) aligned to (a, b), or None. Mutates `consumed` on
+    success."""
+    avail = [x for x in pool if x["i"] not in consumed]
+    if len(avail) < 2:
         return None
     for first, second in ((a, b), (b, a)):
-        combo_first = _combo_match(first, pool, tol_c, lookback, max_combo)
+        combo_first = _combo_match(first, avail, tol_c, lookback, max_combo)
         if not combo_first:
             continue
         used = {x["i"] for x in combo_first}
-        combo_second = _combo_match(second, [x for x in pool if x["i"] not in used],
+        combo_second = _combo_match(second, [x for x in avail if x["i"] not in used],
                                     tol_c, lookback, max_combo)
         if not combo_second:
             continue
         if {x["norm"] for x in combo_first} & {x["norm"] for x in combo_second}:
             continue                       # same ref on both sides = possible re-entry
+        consumed |= used | {x["i"] for x in combo_second}
         refs_a = sorted(x["ref"] for x in (combo_first if first is a else combo_second))
         refs_b = sorted(x["ref"] for x in (combo_second if first is a else combo_first))
         return refs_a, refs_b
@@ -196,6 +204,11 @@ def duplicate_payment_fuzzy(ctx: RunContext):
             #     ~N²/2 CRITICALs. Those pairs are suppressed and each cluster
             #     surfaces as ONE INFO summary below instead (a compromised card
             #     also looks like recurring charges, so it stays visible).
+            # Bill pool for the distinct-invoice-set check, built lazily on the
+            # first qualifying pair; `bills_consumed` spans ALL of this vendor's
+            # pairs so one bill never supports two different reconciliations.
+            bill_pool = None
+            bills_consumed: set = set()
             recurring_amounts = set()
             cadence_clusters = []
             for amount, agrp in grp.groupby("amount"):
@@ -284,8 +297,10 @@ def duplicate_payment_fuzzy(ctx: RunContext):
                     # not a top-of-queue double-pay alarm.
                     if not inv_a and not inv_b and a["txn_type"] in AP_TYPES \
                             and b["txn_type"] in AP_TYPES:
-                        sets = _distinct_invoice_sets(a, b, grp, inv_tol_c,
-                                                      inv_lookback, inv_max_combo)
+                        if bill_pool is None:
+                            bill_pool = _bill_pool(grp)
+                        sets = _distinct_invoice_sets(a, b, bill_pool, bills_consumed,
+                                                      inv_tol_c, inv_lookback, inv_max_combo)
                         if sets:
                             refs_a, refs_b = sets
                             severity = min(severity, Severity.MEDIUM)

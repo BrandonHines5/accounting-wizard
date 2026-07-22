@@ -273,6 +273,31 @@ def test_t1_02_pair_without_second_invoice_set_stays_critical(registry, config):
     assert str(f.severity) == "CRITICAL" and "invoice_sets" not in f.details
 
 
+def test_t1_02_bills_supporting_two_of_three_payments_leave_third_critical(registry, config):
+    # THREE equal no-doc payments but bills covering only TWO: the vendor's bill
+    # pool is consumed across pairs, so only the first (date-ordered) pair
+    # downgrades — every pair touching the unsupported third payment stays
+    # CRITICAL instead of all three pairs reusing the same bills as "support".
+    rows = [("Jurado Framing", 7213.80, "2025-10-08", "171307", "bill", "B1"),
+            ("Jurado Framing", 6138.45, "2025-10-08", "171308", "bill", "B2"),
+            ("Jurado Framing", 13352.25, "2025-10-15", None, "bill_payment", "P1"),
+            ("Jurado Framing", 7213.80, "2025-10-15", "171310", "bill", "B3"),
+            ("Jurado Framing", 6138.45, "2025-10-15", "171311", "bill", "B4"),
+            ("Jurado Framing", 13352.25, "2025-10-22", None, "bill_payment", "P2"),
+            ("Jurado Framing", 13352.25, "2025-10-24", None, "bill_payment", "P3")]
+    findings = list(duplicate_payment_fuzzy(
+        _ctx(txns=_billed(rows), registry=registry, config=config)))
+    assert len(findings) == 3
+    medium = [f for f in findings if str(f.severity) == "MEDIUM"]
+    critical = [f for f in findings if str(f.severity) == "CRITICAL"]
+    assert len(medium) == 1 and set(medium[0].transactions) == {"P1", "P2"}
+    assert "invoice_sets" in medium[0].details
+    assert len(critical) == 2
+    assert all("invoice_sets" not in f.details for f in critical)
+    assert {frozenset(f.transactions) for f in critical} \
+        == {frozenset({"P1", "P3"}), frozenset({"P2", "P3"})}
+
+
 def test_t1_02_reentered_same_refs_never_count_as_support(registry, config):
     # The vendor's bills were entered TWICE with the same invoice numbers — two
     # payments "reconciling" to re-entries of the same refs is the double-pay this
